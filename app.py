@@ -46,7 +46,7 @@ df_bancos, df_gastos, df_rendas, df_inv = load_all_data()
 lista_bancos = df_bancos["nome_banco"].tolist() if not df_bancos.empty else ["Nenhum / Dinheiro em Espécie"]
 
 # -------------------------------------------------------------
-# SIDEBAR: LANÇAMENTOS E MODALIDADES SEPARADAS
+# SIDEBAR: OPERAÇÕES E LANÇAMENTOS
 # -------------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ Operações")
@@ -92,18 +92,17 @@ with st.sidebar:
                 st.success("Gasto lançado!")
                 st.rerun()
 
-    # 3. Cartão de Crédito e Recorrentes (Streaming, Faculdade, Operadora)
+    # 3. Cartão de Crédito e Recorrentes
     with st.expander("💳 Cartão: Parcelados & Recorrentes", expanded=False):
-        # Seleção fora do formulário para renderizar dinamicamente os campos
-        is_recorrente = st.checkbox("🔁 É gasto mensal recorrente? (Faculdade, Streaming, Operadora)")
+        is_recorrente = st.checkbox("🔁 É gasto mensal recorrente? (Faculdade, Streaming, etc.)")
         
         with st.form("form_cartao", clear_on_submit=True):
-            desc_c = st.text_input("Descrição (ex: Faculdade, Netflix, Compra Parcelada)")
+            desc_c = st.text_input("Descrição (ex: Faculdade, Compra Celular, Mercado)")
             
             if is_recorrente:
                 val_mensal_rec = st.number_input("Valor Atual da Mensalidade (R$)", min_value=1.0, step=10.0, format="%.2f")
-                st.caption("ℹ️ Cobrança sem número fixo de parcelas. O valor pode ser ajustado a qualquer momento.")
-                tot_p = 999  # Identificador para recorrente contínuo
+                st.caption("ℹ️ Mensalidade contínua (sem prazo final). Ocupa apenas o limite do ciclo.")
+                tot_p = 999
                 pagas_p = 0
                 val_total_c = val_mensal_rec
                 val_parcela_c = val_mensal_rec
@@ -113,9 +112,9 @@ with st.sidebar:
                 with col_parc1:
                     tot_p = st.number_input("Total de Parcelas", min_value=1, value=1, step=1)
                 with col_parc2:
-                    pagas_p = st.number_input("Parcelas Já Pagas", min_value=0, value=1, step=1)
+                    pagas_p = st.number_input("Parcelas Já Pagas", min_value=0, value=0, step=1)
                 val_parcela_c = val_total_c / tot_p if tot_p > 0 else val_total_c
-                st.caption(f"Valor da parcela mensal: **R$ {val_parcela_c:.2f}**")
+                st.caption(f"Valor de cada parcela: **R$ {val_parcela_c:.2f}**")
 
             banco_c = st.selectbox("Cartão do Banco", lista_bancos)
             nat_c = st.selectbox("Natureza", ["Essencial", "Não Essencial"])
@@ -145,7 +144,7 @@ with st.sidebar:
         with tab_b1:
             with st.form("form_novo_banco", clear_on_submit=True):
                 nome_b = st.text_input("Nome da Instituição (ex: Nubank, Inter, Caixa)")
-                lim_b = st.number_input("Limite do Cartão de Crédito (R$)", min_value=0.0, step=100.0, format="%.2f")
+                lim_b = st.number_input("Limite Total do Cartão (R$)", min_value=0.0, step=100.0, format="%.2f")
                 emp_b = st.number_input("Empréstimo Ativo neste Banco (R$)", min_value=0.0, step=100.0, format="%.2f")
                 fin_b = st.number_input("Financiamento Ativo (ex: Carro) (R$)", min_value=0.0, step=100.0, format="%.2f")
                 if st.form_submit_button("Adicionar Banco") and nome_b.strip():
@@ -204,7 +203,7 @@ st.title("🛡️ Centro de Controle Financeiro")
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Salário Fixo Líquido", f"R$ {salario_fixo:,.2f}", delta=f"+ R$ {dinheiro_extra:,.2f} Extras")
-k2.metric("Saídas do Mês", f"R$ {saidas_mes:,.2f}", delta=f"{(saidas_mes/renda_total*100 if renda_total else 0):.1f}% da Renda", delta_color="inverse")
+k2.metric("Saídas do Mês (Faturas/Fixos)", f"R$ {saidas_mes:,.2f}", delta=f"{(saidas_mes/renda_total*100 if renda_total else 0):.1f}% da Renda", delta_color="inverse")
 k3.metric("Aporte Investimentos (Mês)", f"R$ {aporte_planejado_mes:,.2f}", delta=f"Patrimônio: R$ {total_investido_acumulado:,.2f}")
 k4.metric("Saldo Livre Real", f"R$ {saldo_em_conta:,.2f}", delta="Superávit" if saldo_em_conta >= 0 else "Déficit", delta_color="normal" if saldo_em_conta >= 0 else "inverse")
 
@@ -220,24 +219,45 @@ tab_bancos_view, tab_gastos_view, tab_proj_dividas, tab_proj_inv = st.tabs([
     "📈 Projeção de Investimentos"
 ])
 
-# --- ABA 1: BANCOS E LIMITES ---
+# --- ABA 1: BANCOS E LIMITES COM CONSUMO REAL DO SALDO DEVEDOR ---
 with tab_bancos_view:
-    st.subheader("Uso de Limite e Contas Bancárias")
+    st.subheader("Controle Rigoroso de Limites de Cartão")
+    st.caption("O limite ocupado considera todas as parcelas restantes das suas compras a prazo, como os bancos calculam.")
+    
     if not df_bancos.empty:
         colunas_cards = st.columns(len(df_bancos))
         for idx, (_, b) in enumerate(df_bancos.iterrows()):
-            gastos_banco = df_gastos[(df_gastos["banco_vinculado"] == b["nome_banco"]) & (df_gastos["metodo_pagamento"] == "Crédito")]
-            limite_usado = gastos_banco["valor_parcela"].sum() if not gastos_banco.empty else 0.0
+            # Filtra todas as compras no crédito deste banco
+            compras_banco = df_gastos[(df_gastos["banco_vinculado"] == b["nome_banco"]) & (df_gastos["metodo_pagamento"] == "Crédito")].copy()
+            
+            limite_bloqueado_total = 0.0
+            fatura_mes_atual = 0.0
+            
+            if not compras_banco.empty:
+                fatura_mes_atual = compras_banco["valor_parcela"].sum()
+                for _, row_g in compras_banco.iterrows():
+                    if row_g["parcelas_totais"] == 999:
+                        # Recorrente: compromete o ciclo mensal
+                        limite_bloqueado_total += float(row_g["valor_parcela"])
+                    else:
+                        # Parcelado: compromete as parcelas que faltam pagar
+                        restantes = max(0, int(row_g["parcelas_totais"]) - int(row_g["parcelas_pagas"]))
+                        limite_bloqueado_total += restantes * float(row_g["valor_parcela"])
+
             limite_total = float(b["limite_credito"])
-            limite_disponivel = max(0.0, limite_total - limite_usado)
+            limite_disponivel = max(0.0, limite_total - limite_bloqueado_total)
 
             with colunas_cards[idx % len(colunas_cards)]:
                 st.markdown(f"### {b['nome_banco']}")
-                st.write(f"💳 **Limite Total:** R$ {limite_total:,.2f}")
-                st.write(f"🔴 **Comprometido no Mês:** R$ {limite_usado:,.2f}")
-                st.write(f"🟢 **Disponível:** R$ {limite_disponivel:,.2f}")
+                st.write(f"💳 **Limite Contratado:** R$ {limite_total:,.2f}")
+                st.write(f"🔒 **Limite Preso (Saldo Remanescente):** R$ {limite_bloqueado_total:,.2f}")
+                st.write(f"🟢 **Limite Livre Real:** R$ {limite_disponivel:,.2f}")
+                st.write(f"🧾 **Fatura Deste Mês:** R$ {fatura_mes_atual:,.2f}")
+                
                 if limite_total > 0:
-                    st.progress(min(1.0, limite_usado / limite_total))
+                    pct_preso = min(1.0, limite_bloqueado_total / limite_total)
+                    st.progress(pct_preso)
+                
                 if float(b["financiamento_ativo"]) > 0 or float(b["emprestimo_ativo"]) > 0:
                     st.caption(f"🚗 Financiamento: R$ {float(b['financiamento_ativo']):,.2f} | 🏦 Empréstimo: R$ {float(b['emprestimo_ativo']):,.2f}")
     else:
@@ -249,13 +269,12 @@ with tab_gastos_view:
     if not df_gastos.empty:
         df_display = df_gastos.copy()
         
-        # Tratamento visual para itens recorrentes vs parcelados
         df_display["parcelas_restantes"] = df_display.apply(
-            lambda row: "Recorrente (Sem Fim)" if row["parcelas_totais"] == 999 else max(0, row["parcelas_totais"] - row["parcelas_pagas"]),
+            lambda row: "Recorrente (Sem Fim)" if row["parcelas_totais"] == 999 else max(0, int(row["parcelas_totais"]) - int(row["parcelas_pagas"])),
             axis=1
         )
         df_display["saldo_devedor"] = df_display.apply(
-            lambda row: "Mensalidade Contínua" if row["parcelas_totais"] == 999 else f"R$ {(max(0, row['parcelas_totais'] - row['parcelas_pagas']) * row['valor_parcela']):,.2f}",
+            lambda row: "Mensalidade Contínua" if row["parcelas_totais"] == 999 else f"R$ {(max(0, int(row['parcelas_totais']) - int(row['parcelas_pagas'])) * float(row['valor_parcela'])):,.2f}",
             axis=1
         )
         df_display["progresso_parcela"] = df_display.apply(
@@ -274,7 +293,6 @@ with tab_gastos_view:
 
         c_ajuste1, c_ajuste2, c_ajuste3 = st.columns(3)
 
-        # 1. Reajustar valor mensal (Perfeito para faculdade, streaming, plano móvel)
         with c_ajuste1:
             with st.expander("💲 Reajustar Valor Mensal"):
                 id_reajuste = st.selectbox("Selecione o gasto:", options=df_display["id"].tolist(), key="sb_reajuste")
@@ -287,7 +305,6 @@ with tab_gastos_view:
                     st.success("Valor reajustado com sucesso!")
                     st.rerun()
 
-        # 2. Pagar parcela de compras parceladas
         with c_ajuste2:
             with st.expander("⏩ Pagar Parcela (+1 Mês)"):
                 gastos_parcelados = df_display[df_display["parcelas_totais"] != 999]
@@ -298,14 +315,13 @@ with tab_gastos_view:
                         if item["parcelas_pagas"] < item["parcelas_totais"]:
                             nova_paga = int(item["parcelas_pagas"]) + 1
                             supabase.table("gastos_v2").update({"parcelas_pagas": nova_paga}).eq("id", id_parc).execute()
-                            st.success("Parcela avançada!")
+                            st.success("Parcela avançada! O limite do cartão foi proporcionalmente liberado.")
                             st.rerun()
                         else:
-                            st.warning("Este gasto já está quitado.")
+                            st.warning("Este gasto já está totalmente quitado.")
                 else:
                     st.caption("Sem gastos parcelados pendentes.")
 
-        # 3. Remover gasto
         with c_ajuste3:
             with st.expander("🗑️ Excluir Registro"):
                 del_id = st.selectbox("ID para remover:", options=df_display["id"].tolist(), key="sb_del")
@@ -319,10 +335,9 @@ with tab_gastos_view:
 # --- ABA 3: PROJEÇÃO DE DÍVIDAS E PARCELAS ---
 with tab_proj_dividas:
     st.subheader("📉 Horizonte de Quitação (Compras Parceladas)")
-    st.caption("Considera apenas dívidas com término programado (exclui mensalidades recorrentes).")
+    st.caption("Considera apenas parcelamentos com término programado (exclui assinaturas contínuas).")
 
     if not df_gastos.empty:
-        # Filtra apenas itens parcelados finitos
         dividas_fin = df_gastos[(df_gastos["parcelas_totais"] > 1) & (df_gastos["parcelas_totais"] != 999)].copy()
         
         if not dividas_fin.empty:
@@ -340,7 +355,7 @@ with tab_proj_dividas:
             st.plotly_chart(fig_div, use_container_width=True)
 
             total_saldo_devedor = (dividas_fin["faltam"] * dividas_fin["valor_parcela"]).sum()
-            st.metric("Saldo Devedor Total Consolidado (Parcelados)", f"R$ {total_saldo_devedor:,.2f}")
+            st.metric("Saldo Devedor Total Preso no Crédito", f"R$ {total_saldo_devedor:,.2f}")
         else:
             st.info("Você não possui dívidas com parcelamento finito em aberto.")
     else:

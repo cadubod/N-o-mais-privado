@@ -12,8 +12,8 @@ st.set_page_config(
 )
 
 # Conexão com Supabase
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://gquwpdkgzbbjgaqoktcx.supabase.co")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "SUA_CHAVE_JWT_AQUI")
+SUPABASE_URL = "https://gquwpdkgzbbjgaqoktcx.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxdXdwZGtnemJiamdhcW9rdGN4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NDY5MDYsImV4cCI6MjEwNTIyMjkwNn0.aqFg8SSiGmD5sic9oJ2gdDjn_gC3EEoYicB_MmiLG-U"
 
 @st.cache_resource
 def get_db_client() -> Client:

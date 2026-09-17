@@ -12,8 +12,8 @@ st.set_page_config(
 )
 
 # Conexão com Supabase
-SUPABASE_URL = "https://gquwpdkgzbbjgaqoktcx.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxdXdwZGtnemJiamdhcW9rdGN4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NDY5MDYsImV4cCI6MjEwNTIyMjkwNn0.aqFg8SSiGmD5sic9oJ2gdDjn_gC3EEoYicB_MmiLG-U"
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://gquwpdkgzbbjgaqoktcx.supabase.co")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxdXdwZGtnemJiamdhcW9rdGN4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NDY5MDYsImV4cCI6MjEwNTIyMjkwNn0.aqFg8SSiGmD5sic9oJ2gdDjn_gC3EEoYicB_MmiLG-U")
 
 @st.cache_resource
 def get_db_client() -> Client:
@@ -43,7 +43,6 @@ def load_all_data():
 
 df_bancos, df_gastos, df_rendas, df_inv = load_all_data()
 
-# Lista para selects
 lista_bancos = df_bancos["nome_banco"].tolist() if not df_bancos.empty else ["Nenhum / Dinheiro em Espécie"]
 
 # -------------------------------------------------------------
@@ -93,25 +92,37 @@ with st.sidebar:
                 st.success("Gasto lançado!")
                 st.rerun()
 
-    # 3. Cartão de Crédito e Parcelamentos
-    with st.expander("💳 Compra no Cartão / Parcelados", expanded=False):
+    # 3. Cartão de Crédito e Recorrentes (Streaming, Faculdade, Operadora)
+    with st.expander("💳 Cartão: Parcelados & Recorrentes", expanded=False):
+        # Seleção fora do formulário para renderizar dinamicamente os campos
+        is_recorrente = st.checkbox("🔁 É gasto mensal recorrente? (Faculdade, Streaming, Operadora)")
+        
         with st.form("form_cartao", clear_on_submit=True):
-            desc_c = st.text_input("Descrição da Compra / Fatura")
-            val_total_c = st.number_input("Valor Total da Compra (R$)", min_value=1.0, step=20.0, format="%.2f")
-            col_parc1, col_parc2 = st.columns(2)
-            with col_parc1:
-                tot_p = st.number_input("Total de Parcelas", min_value=1, value=1, step=1)
-            with col_parc2:
-                pagas_p = st.number_input("Parcelas Já Pagas", min_value=0, value=1, step=1)
+            desc_c = st.text_input("Descrição (ex: Faculdade, Netflix, Compra Parcelada)")
             
-            val_parcela_c = val_total_c / tot_p if tot_p > 0 else val_total_c
-            st.caption(f"Valor estimado da parcela: **R$ {val_parcela_c:.2f}**")
+            if is_recorrente:
+                val_mensal_rec = st.number_input("Valor Atual da Mensalidade (R$)", min_value=1.0, step=10.0, format="%.2f")
+                st.caption("ℹ️ Cobrança sem número fixo de parcelas. O valor pode ser ajustado a qualquer momento.")
+                tot_p = 999  # Identificador para recorrente contínuo
+                pagas_p = 0
+                val_total_c = val_mensal_rec
+                val_parcela_c = val_mensal_rec
+            else:
+                val_total_c = st.number_input("Valor Total da Compra (R$)", min_value=1.0, step=20.0, format="%.2f")
+                col_parc1, col_parc2 = st.columns(2)
+                with col_parc1:
+                    tot_p = st.number_input("Total de Parcelas", min_value=1, value=1, step=1)
+                with col_parc2:
+                    pagas_p = st.number_input("Parcelas Já Pagas", min_value=0, value=1, step=1)
+                val_parcela_c = val_total_c / tot_p if tot_p > 0 else val_total_c
+                st.caption(f"Valor da parcela mensal: **R$ {val_parcela_c:.2f}**")
 
             banco_c = st.selectbox("Cartão do Banco", lista_bancos)
-            nat_c = st.selectbox("Natureza", ["Não Essencial", "Essencial"])
+            nat_c = st.selectbox("Natureza", ["Essencial", "Não Essencial"])
             dest_c = st.selectbox("Destino", ["Pessoal", "Namorada / Casal", "Casa"])
 
             if st.form_submit_button("Salvar no Cartão") and desc_c.strip():
+                categoria_final = "Recorrente / Assinatura" if is_recorrente else "Cartão de Crédito"
                 supabase.table("gastos_v2").insert({
                     "descricao": desc_c.strip(),
                     "valor_total": float(val_total_c),
@@ -119,13 +130,13 @@ with st.sidebar:
                     "parcelas_pagas": int(pagas_p),
                     "parcelas_totais": int(tot_p),
                     "metodo_pagamento": "Crédito",
-                    "categoria": "Cartão de Crédito",
+                    "categoria": categoria_final,
                     "banco_vinculado": banco_c,
                     "natureza": nat_c,
                     "destino": dest_c,
                     "data_registro": str(date.today())
                 }).execute()
-                st.success("Registrado no Cartão!")
+                st.success("Lançamento cadastrado!")
                 st.rerun()
 
     # 4. Gestão de Contas Bancárias & Limites
@@ -180,7 +191,6 @@ salario_fixo = df_rendas[df_rendas["tipo"] == "Salário Fixo"]["valor"].sum() if
 dinheiro_extra = df_rendas[df_rendas["tipo"] == "Dinheiro Extra"]["valor"].sum() if not df_rendas.empty else 0.0
 renda_total = salario_fixo + dinheiro_extra
 
-# Gastos do mês considerando o valor da parcela corrente
 saidas_mes = df_gastos["valor_parcela"].sum() if not df_gastos.empty else 0.0
 total_investido_acumulado = df_inv["valor_acumulado"].sum() if not df_inv.empty else 0.0
 aporte_planejado_mes = df_inv["aporte_mensal_planejado"].sum() if not df_inv.empty else 0.0
@@ -194,7 +204,7 @@ st.title("🛡️ Centro de Controle Financeiro")
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Salário Fixo Líquido", f"R$ {salario_fixo:,.2f}", delta=f"+ R$ {dinheiro_extra:,.2f} Extras")
-k2.metric("Saídas do Mês (Despesas)", f"R$ {saidas_mes:,.2f}", delta=f"{(saidas_mes/renda_total*100 if renda_total else 0):.1f}% da Renda", delta_color="inverse")
+k2.metric("Saídas do Mês", f"R$ {saidas_mes:,.2f}", delta=f"{(saidas_mes/renda_total*100 if renda_total else 0):.1f}% da Renda", delta_color="inverse")
 k3.metric("Aporte Investimentos (Mês)", f"R$ {aporte_planejado_mes:,.2f}", delta=f"Patrimônio: R$ {total_investido_acumulado:,.2f}")
 k4.metric("Saldo Livre Real", f"R$ {saldo_em_conta:,.2f}", delta="Superávit" if saldo_em_conta >= 0 else "Déficit", delta_color="normal" if saldo_em_conta >= 0 else "inverse")
 
@@ -205,8 +215,8 @@ st.markdown("---")
 # -------------------------------------------------------------
 tab_bancos_view, tab_gastos_view, tab_proj_dividas, tab_proj_inv = st.tabs([
     "🏦 Bancos & Limites de Crédito",
-    "📝 Extrato & Parcelas Faltantes",
-    "📉 Projeção de Parcelas & Financiamentos",
+    "📝 Extrato & Parcelas",
+    "📉 Projeção de Dívidas",
     "📈 Projeção de Investimentos"
 ])
 
@@ -216,7 +226,6 @@ with tab_bancos_view:
     if not df_bancos.empty:
         colunas_cards = st.columns(len(df_bancos))
         for idx, (_, b) in enumerate(df_bancos.iterrows()):
-            # Calcular gastos em aberto no crédito deste banco
             gastos_banco = df_gastos[(df_gastos["banco_vinculado"] == b["nome_banco"]) & (df_gastos["metodo_pagamento"] == "Crédito")]
             limite_usado = gastos_banco["valor_parcela"].sum() if not gastos_banco.empty else 0.0
             limite_total = float(b["limite_credito"])
@@ -225,7 +234,7 @@ with tab_bancos_view:
             with colunas_cards[idx % len(colunas_cards)]:
                 st.markdown(f"### {b['nome_banco']}")
                 st.write(f"💳 **Limite Total:** R$ {limite_total:,.2f}")
-                st.write(f"🔴 **Usado este mês:** R$ {limite_usado:,.2f}")
+                st.write(f"🔴 **Comprometido no Mês:** R$ {limite_usado:,.2f}")
                 st.write(f"🟢 **Disponível:** R$ {limite_disponivel:,.2f}")
                 if limite_total > 0:
                     st.progress(min(1.0, limite_usado / limite_total))
@@ -234,72 +243,108 @@ with tab_bancos_view:
     else:
         st.info("Nenhum banco cadastrado. Adicione seus bancos na barra lateral.")
 
-# --- ABA 2: EXTRATO COM CONTROLE DE PARCELAS ---
+# --- ABA 2: EXTRATO COM CONTROLE DE PARCELAS E REAJUSTES ---
 with tab_gastos_view:
-    st.subheader("Detalhamento de Compras e Parcelamentos")
+    st.subheader("Detalhamento de Gastos & Assinaturas")
     if not df_gastos.empty:
-        # Calcular parcelas restantes
         df_display = df_gastos.copy()
-        df_display["parcelas_restantes"] = df_display["parcelas_totais"] - df_display["parcelas_pagas"]
-        df_display["saldo_devedor"] = df_display["parcelas_restantes"] * df_display["valor_parcela"]
+        
+        # Tratamento visual para itens recorrentes vs parcelados
+        df_display["parcelas_restantes"] = df_display.apply(
+            lambda row: "Recorrente (Sem Fim)" if row["parcelas_totais"] == 999 else max(0, row["parcelas_totais"] - row["parcelas_pagas"]),
+            axis=1
+        )
+        df_display["saldo_devedor"] = df_display.apply(
+            lambda row: "Mensalidade Contínua" if row["parcelas_totais"] == 999 else f"R$ {(max(0, row['parcelas_totais'] - row['parcelas_pagas']) * row['valor_parcela']):,.2f}",
+            axis=1
+        )
+        df_display["progresso_parcela"] = df_display.apply(
+            lambda row: "Recorrente" if row["parcelas_totais"] == 999 else f"{row['parcelas_pagas']}/{row['parcelas_totais']}",
+            axis=1
+        )
 
         st.dataframe(
             df_display[[
                 "id", "descricao", "categoria", "metodo_pagamento", "banco_vinculado",
-                "valor_parcela", "parcelas_pagas", "parcelas_totais", "parcelas_restantes",
-                "saldo_devedor", "destino"
+                "valor_parcela", "progresso_parcela", "parcelas_restantes", "saldo_devedor", "destino"
             ]],
             use_container_width=True,
             hide_index=True
         )
 
-        # Atualizador rápido de parcelas pagas
-        with st.expander("⏩ Pagar Parcela (Avançar 1 mês)"):
-            gasto_selecionado = st.selectbox("Selecione o gasto para registrar pagamento da parcela:", options=df_display["id"].tolist())
-            if st.button("Confirmar Pagamento de 1 Parcela"):
-                item = df_display[df_display["id"] == gasto_selecionado].iloc[0]
-                if item["parcelas_pagas"] < item["parcelas_totais"]:
-                    nova_paga = int(item["parcelas_pagas"]) + 1
-                    supabase.table("gastos_v2").update({"parcelas_pagas": nova_paga}).eq("id", gasto_selecionado).execute()
-                    st.success("Parcela atualizada com sucesso!")
-                    st.rerun()
-                else:
-                    st.warning("Todas as parcelas deste item já foram quitadas!")
+        c_ajuste1, c_ajuste2, c_ajuste3 = st.columns(3)
 
-        with st.expander("🗑️ Excluir Lançamento"):
-            del_id = st.selectbox("ID para remover", options=df_display["id"].tolist())
-            if st.button("Remover Definitivamente"):
-                supabase.table("gastos_v2").delete().eq("id", del_id).execute()
-                st.success("Registro removido!")
-                st.rerun()
+        # 1. Reajustar valor mensal (Perfeito para faculdade, streaming, plano móvel)
+        with c_ajuste1:
+            with st.expander("💲 Reajustar Valor Mensal"):
+                id_reajuste = st.selectbox("Selecione o gasto:", options=df_display["id"].tolist(), key="sb_reajuste")
+                novo_valor_mensal = st.number_input("Novo Valor Mensal (R$)", min_value=0.10, step=5.0, format="%.2f")
+                if st.button("Atualizar Valor"):
+                    supabase.table("gastos_v2").update({
+                        "valor_parcela": float(novo_valor_mensal),
+                        "valor_total": float(novo_valor_mensal)
+                    }).eq("id", id_reajuste).execute()
+                    st.success("Valor reajustado com sucesso!")
+                    st.rerun()
+
+        # 2. Pagar parcela de compras parceladas
+        with c_ajuste2:
+            with st.expander("⏩ Pagar Parcela (+1 Mês)"):
+                gastos_parcelados = df_display[df_display["parcelas_totais"] != 999]
+                if not gastos_parcelados.empty:
+                    id_parc = st.selectbox("Gasto Parcelado:", options=gastos_parcelados["id"].tolist(), key="sb_pagar")
+                    if st.button("Confirmar Pagamento"):
+                        item = df_display[df_display["id"] == id_parc].iloc[0]
+                        if item["parcelas_pagas"] < item["parcelas_totais"]:
+                            nova_paga = int(item["parcelas_pagas"]) + 1
+                            supabase.table("gastos_v2").update({"parcelas_pagas": nova_paga}).eq("id", id_parc).execute()
+                            st.success("Parcela avançada!")
+                            st.rerun()
+                        else:
+                            st.warning("Este gasto já está quitado.")
+                else:
+                    st.caption("Sem gastos parcelados pendentes.")
+
+        # 3. Remover gasto
+        with c_ajuste3:
+            with st.expander("🗑️ Excluir Registro"):
+                del_id = st.selectbox("ID para remover:", options=df_display["id"].tolist(), key="sb_del")
+                if st.button("Remover Definitivamente"):
+                    supabase.table("gastos_v2").delete().eq("id", del_id).execute()
+                    st.success("Registro removido!")
+                    st.rerun()
     else:
         st.info("Nenhum gasto cadastrado.")
 
 # --- ABA 3: PROJEÇÃO DE DÍVIDAS E PARCELAS ---
 with tab_proj_dividas:
-    st.subheader("📉 Horizonte de Quitação de Dívidas")
-    st.caption("Visão da redução gradativa das suas parcelas e saldo devedor.")
+    st.subheader("📉 Horizonte de Quitação (Compras Parceladas)")
+    st.caption("Considera apenas dívidas com término programado (exclui mensalidades recorrentes).")
 
     if not df_gastos.empty:
-        dividas_parceladas = df_gastos[df_gastos["parcelas_totais"] > 1].copy()
-        dividas_parceladas["faltam"] = dividas_parceladas["parcelas_totais"] - dividas_parceladas["parcelas_pagas"]
-        max_meses = int(dividas_parceladas["faltam"].max()) if not dividas_parceladas.empty and dividas_parceladas["faltam"].max() > 0 else 1
+        # Filtra apenas itens parcelados finitos
+        dividas_fin = df_gastos[(df_gastos["parcelas_totais"] > 1) & (df_gastos["parcelas_totais"] != 999)].copy()
+        
+        if not dividas_fin.empty:
+            dividas_fin["faltam"] = dividas_fin["parcelas_totais"] - dividas_fin["parcelas_pagas"]
+            max_meses = int(dividas_fin["faltam"].max()) if dividas_fin["faltam"].max() > 0 else 1
 
-        projecao_divida = []
-        for mes in range(1, max_meses + 1):
-            parcelas_ativas = dividas_parceladas[dividas_parceladas["faltam"] >= mes]
-            custo_mes = parcelas_ativas["valor_parcela"].sum()
-            projecao_divida.append({"Mês": f"+{mes} Mês", "Comprometimento (R$)": custo_mes})
+            projecao_divida = []
+            for mes in range(1, max_meses + 1):
+                parcelas_ativas = dividas_fin[dividas_fin["faltam"] >= mes]
+                custo_mes = parcelas_ativas["valor_parcela"].sum()
+                projecao_divida.append({"Mês": f"+{mes} Mês", "Comprometimento (R$)": custo_mes})
 
-        df_proj_div = pd.DataFrame(projecao_divida)
-        if not df_proj_div.empty:
-            fig_div = px.bar(df_proj_div, x="Mês", y="Comprometimento (R$)", title="Carga de Parcelas nos Próximos Meses", text_auto=True)
+            df_proj_div = pd.DataFrame(projecao_divida)
+            fig_div = px.bar(df_proj_div, x="Mês", y="Comprometimento (R$)", title="Carga de Parcelas Finitas nos Próximos Meses", text_auto=True)
             st.plotly_chart(fig_div, use_container_width=True)
 
-        total_saldo_devedor = (dividas_parceladas["faltam"] * dividas_parceladas["valor_parcela"]).sum()
-        st.metric("Saldo Devedor Total Consolidado (Parcelados)", f"R$ {total_saldo_devedor:,.2f}")
+            total_saldo_devedor = (dividas_fin["faltam"] * dividas_fin["valor_parcela"]).sum()
+            st.metric("Saldo Devedor Total Consolidado (Parcelados)", f"R$ {total_saldo_devedor:,.2f}")
+        else:
+            st.info("Você não possui dívidas com parcelamento finito em aberto.")
     else:
-        st.info("Cadastre parcelamentos para projetar o cronograma de quitação.")
+        st.info("Cadastre lançamentos para gerar projeções.")
 
 # --- ABA 4: PROJEÇÃO DE INVESTIMENTOS ---
 with tab_proj_inv:

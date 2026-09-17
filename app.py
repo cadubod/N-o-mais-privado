@@ -14,7 +14,7 @@ st.set_page_config(
 
 # Conexão com Supabase (pode ler de st.secrets se hospedado no Streamlit Cloud)
 SUPABASE_URL = "https://gquwpdkgzbbjgaqoktcx.supabase.co"
-SUPABASE_KEY = "sb_publishable_gMd8BKZA62IvKZ1U-WmTXA_rePUa..."  # Cole aqui o código completo da Publishable key que você copiou
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxdXdwZGtnemJiamdhcW9rdGN4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NDY5MDYsImV4cCI6MjEwNTIyMjkwNn0.aqFg8SSiGmD5sic9oJ2gdDjn_gC3EEoYicB_MmiLG-U"  # Cole aqui o código completo da Publishable key que você copiou
 
 @st.cache_resource
 def get_db_client() -> Client:

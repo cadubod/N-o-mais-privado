@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import date, datetime
+from datetime import date
 from supabase import create_client, Client
 
 st.set_page_config(
@@ -39,7 +39,6 @@ def load_all_data():
     df_r = pd.DataFrame(r_rendas.data) if r_rendas.data else pd.DataFrame(columns=["id", "origem", "valor", "tipo", "data_registro"])
     df_i = pd.DataFrame(r_inv.data) if r_inv.data else pd.DataFrame(columns=["id", "ativo", "categoria", "valor_acumulado", "aporte_mensal_planejado", "taxa_anual_estimada"])
     
-    # Garantir colunas padrão caso estejam ausentes
     if "dia_fechamento" not in df_b.columns:
         df_b["dia_fechamento"] = 1
     if "dia_vencimento" not in df_b.columns:
@@ -48,12 +47,11 @@ def load_all_data():
     return df_b, df_g, df_r, df_i
 
 df_bancos, df_gastos, df_rendas, df_inv = load_all_data()
-
 lista_bancos = df_bancos["nome_banco"].tolist() if not df_bancos.empty else ["Nenhum / Dinheiro em Espécie"]
 hoje = date.today()
 
 # -------------------------------------------------------------
-# SIDEBAR: LANÇAMENTOS COM DATAS
+# SIDEBAR: OPERAÇÕES
 # -------------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ Operações")
@@ -143,12 +141,13 @@ with st.sidebar:
                     "destino": dest_c,
                     "data_registro": str(data_compra_c)
                 }).execute()
-                st.success("Cadastrado com data!")
+                st.success("Cadastrado com sucesso!")
                 st.rerun()
 
-    # 4. Gerenciamento de Bancos com Fechamento e Vencimento
-    with st.expander("🏦 Gerenciar Bancos & Datas de Fatura", expanded=False):
-        tab_b1, tab_b2 = st.tabs(["Cadastrar", "Excluir"])
+    # 4. Gerenciamento de Bancos: Cadastro, Edição de Datas/Limites e Exclusão
+    with st.expander("🏦 Gerenciar Bancos, Limites & Datas", expanded=False):
+        tab_b1, tab_b2, tab_b3 = st.tabs(["Cadastrar", "✏️ Editar Datas", "Excluir"])
+        
         with tab_b1:
             with st.form("form_novo_banco", clear_on_submit=True):
                 nome_b = st.text_input("Nome da Instituição (ex: Nubank, Inter)")
@@ -169,11 +168,37 @@ with st.sidebar:
                         "emprestimo_ativo": float(emp_b),
                         "financiamento_ativo": float(fin_b)
                     }).execute()
-                    st.success("Banco salvo com datas!")
+                    st.success("Banco salvo!")
                     st.rerun()
+
+        # ABA NOVA: Alteração direta de datas e limite sem recriar
         with tab_b2:
             if not df_bancos.empty:
-                b_remover = st.selectbox("Escolha o banco:", options=df_bancos["nome_banco"].tolist())
+                banco_para_editar = st.selectbox("Selecione o banco para alterar:", options=df_bancos["nome_banco"].tolist(), key="sb_edit_banco")
+                dados_atuais = df_bancos[df_bancos["nome_banco"] == banco_para_editar].iloc[0]
+                
+                with st.form("form_editar_banco"):
+                    novo_lim = st.number_input("Limite do Cartão (R$)", min_value=0.0, value=float(dados_atuais["limite_credito"]), step=100.0, format="%.2f")
+                    col_ed1, col_ed2 = st.columns(2)
+                    with col_ed1:
+                        novo_fech = st.number_input("Novo Fechamento", min_value=1, max_value=31, value=int(dados_atuais["dia_fechamento"]), step=1)
+                    with col_ed2:
+                        novo_venc = st.number_input("Novo Vencimento", min_value=1, max_value=31, value=int(dados_atuais["dia_vencimento"]), step=1)
+                    
+                    if st.form_submit_button("Atualizar Informações"):
+                        supabase.table("contas_bancos").update({
+                            "limite_credito": float(novo_lim),
+                            "dia_fechamento": int(novo_fech),
+                            "dia_vencimento": int(novo_venc)
+                        }).eq("id", dados_atuais["id"]).execute()
+                        st.success(f"Dados do {banco_para_editar} atualizados!")
+                        st.rerun()
+            else:
+                st.info("Nenhum banco cadastrado para editar.")
+
+        with tab_b3:
+            if not df_bancos.empty:
+                b_remover = st.selectbox("Escolha o banco:", options=df_bancos["nome_banco"].tolist(), key="sb_del_banco")
                 if st.button("Remover Banco"):
                     supabase.table("contas_bancos").delete().eq("nome_banco", b_remover).execute()
                     st.success("Banco removido!")
@@ -250,7 +275,6 @@ with tab_bancos_view:
             
             if not compras_banco.empty:
                 for _, row_g in compras_banco.iterrows():
-                    # Itens não quitados geram parcela na fatura
                     if row_g["parcelas_totais"] == 999:
                         fatura_mes_atual += float(row_g["valor_parcela"])
                         limite_bloqueado_total += float(row_g["valor_parcela"])
@@ -269,7 +293,7 @@ with tab_bancos_view:
             with colunas_cards[idx % len(colunas_cards)]:
                 st.markdown(f"### {b['nome_banco']}")
                 
-                # Alertas Inteligentes de Fatura
+                # Alertas Inteligentes
                 if dia_atual < dia_fech:
                     st.info(f"🟢 Fatura Aberta (Fecha dia {dia_fech:02d})")
                 elif dia_atual >= dia_fech and dia_atual <= dia_venc:
@@ -286,11 +310,9 @@ with tab_bancos_view:
                 if limite_total > 0:
                     st.progress(min(1.0, limite_bloqueado_total / limite_total))
 
-                # BOTÃO MESTRE: PAGAR FATURA DO BANCO
                 st.markdown("---")
                 if fatura_mes_atual > 0:
                     if st.button(f"✅ Pagar Fatura {b['nome_banco']} (R$ {fatura_mes_atual:,.2f})", key=f"pay_btn_{b['id']}"):
-                        # 1. Atualizar parcelas de todos os itens em aberto deste banco
                         for _, row_g in compras_banco.iterrows():
                             if row_g["parcelas_totais"] != 999:
                                 if row_g["parcelas_pagas"] < row_g["parcelas_totais"]:
@@ -300,7 +322,7 @@ with tab_bancos_view:
                         st.success(f"Fatura do {b['nome_banco']} quitada! Parcelas avançadas e limite liberado.")
                         st.rerun()
                 else:
-                    st.success("Fatura zerada / Sem lançamentos pendentes.")
+                    st.success("Fatura zerada / Sem pendências.")
     else:
         st.info("Cadastre seus bancos na barra lateral.")
 

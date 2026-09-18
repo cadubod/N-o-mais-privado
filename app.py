@@ -120,7 +120,6 @@ with st.sidebar:
             
             if st.form_submit_button("Registrar Gasto") and desc_dia.strip():
                 comprador_id = opcoes_comprador[quem_comprou_dia]
-                # TRAVA INTELIGENTE: Se lançar no nome do outro, força a ser compartilhado para não quebrar a segurança RLS
                 if comprador_id != user_id:
                     is_shared = True
                 
@@ -157,7 +156,6 @@ with st.sidebar:
 
             if st.form_submit_button("Lançar na Fatura") and desc_c.strip():
                 comprador_id_c = opcoes_comprador[quem_comprou_c]
-                # TRAVA INTELIGENTE
                 if comprador_id_c != user_id:
                     is_shared_c = True
                     
@@ -184,7 +182,9 @@ with st.sidebar:
                     supabase.table("contas_bancos").insert({
                         "profile_id": user_id, "joint_account_id": joint_id if is_shared_b else None,
                         "nome_banco": nome_b.strip(), "limite_credito": float(lim_b),
-                        "dia_fechamento": int(dia_f), "dia_vencimento": int(dia_v), "shared": is_shared_b
+                        "dia_fechamento": int(dia_f), "dia_vencimento": int(dia_v), 
+                        "emprestimo_ativo": 0.0, "financiamento_ativo": 0.0,
+                        "shared": is_shared_b
                     }).execute()
                     st.rerun()
         with tab_b2:
@@ -219,7 +219,7 @@ with st.sidebar:
                     "profile_id": user_id, "joint_account_id": joint_id if is_shared_inv else None,
                     "ativo": nome_ativo.strip(), "categoria": cat_inv,
                     "valor_acumulado": float(val_acum), "aporte_mensal_planejado": float(aporte_plano),
-                    "shared": is_shared_inv
+                    "taxa_anual_estimada": 10.0, "shared": is_shared_inv
                 }).execute()
                 st.rerun()
 
@@ -412,7 +412,8 @@ with tab_simulador:
     if not df_inv.empty:
         df_inv_disp = df_inv.copy()
         df_inv_disp["Dono"] = df_inv_disp["profile_id"].map(mapa_nomes).fillna("Desconhecido")
-        max_val = df_inv_disp["valor_acumulado"].max() * 1.5 if not df_inv_disp.empty else 10000
+        
+        max_val = float(df_inv_disp["valor_acumulado"].max() * 1.5) if not df_inv_disp.empty else 10000.0
         
         st.dataframe(
             df_inv_disp[["Dono", "ativo", "categoria", "valor_acumulado", "aporte_mensal_planejado", "id"]],
@@ -449,7 +450,7 @@ with tab_simulador:
         st.info("Portfólio vazio.")
 
     st.markdown("---")
-    st.subheader("📈 Projeção Estratégica Baseada no CDI (10.5% a.a.)")
+    st.subheader("📈 Projeção Estratégica Baseada no CDI")
     
     col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1: aporte_sim = st.number_input("Aporte Consistente (R$)", min_value=10.0, value=max(50.0, float(saldo_livre)), step=100.0, format="%.2f")

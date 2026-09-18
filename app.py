@@ -34,21 +34,14 @@ membros_conjuntos = get_joint_members()
 
 # Mapeamentos para Interface Multi-Perfil
 mapa_nomes = {m["id"]: m.get("display_name", "Membro") for m in membros_conjuntos} if membros_conjuntos else {user_id: display_name}
-
-# Lógica para as opções do Selectbox de "Quem comprou?"
-if membros_conjuntos:
-    opcoes_comprador = {m.get("display_name", "Membro"): m["id"] for m in membros_conjuntos}
-else:
-    opcoes_comprador = {display_name: user_id}
-
+opcoes_comprador = {m.get("display_name", "Membro"): m["id"] for m in membros_conjuntos} if membros_conjuntos else {display_name: user_id}
 nomes_compradores = list(opcoes_comprador.keys())
-# Define o usuário logado como padrão no formulário
 idx_atual = nomes_compradores.index(display_name) if display_name in nomes_compradores else 0
 
 supabase = get_supabase_client()
 
 # -------------------------------------------------------------
-# CARREGAMENTO DE DADOS (RLS garante a segurança automática)
+# CARREGAMENTO DE DADOS (RLS ativo)
 # -------------------------------------------------------------
 def load_all_data():
     r_bancos = supabase.table("contas_bancos").select("*").execute()
@@ -57,7 +50,7 @@ def load_all_data():
     r_inv = supabase.table("investimentos").select("*").order("id").execute()
     
     df_b = pd.DataFrame(r_bancos.data) if r_bancos.data else pd.DataFrame(columns=["id", "nome_banco", "limite_credito", "dia_fechamento", "dia_vencimento", "profile_id"])
-    df_g = pd.DataFrame(r_gastos.data) if r_gastos.data else pd.DataFrame(columns=["id", "descricao", "valor_parcela", "parcelas_pagas", "parcelas_totais", "metodo_pagamento", "categoria", "banco_vinculado", "natureza", "destino", "data_registro", "profile_id"])
+    df_g = pd.DataFrame(r_gastos.data) if r_gastos.data else pd.DataFrame(columns=["id", "descricao", "valor_total", "valor_parcela", "parcelas_pagas", "parcelas_totais", "metodo_pagamento", "categoria", "banco_vinculado", "natureza", "destino", "data_registro", "profile_id"])
     df_r = pd.DataFrame(r_rendas.data) if r_rendas.data else pd.DataFrame(columns=["id", "origem", "valor", "tipo", "data_registro", "profile_id"])
     df_i = pd.DataFrame(r_inv.data) if r_inv.data else pd.DataFrame(columns=["id", "ativo", "categoria", "valor_acumulado", "aporte_mensal_planejado", "taxa_anual_estimada", "profile_id"])
     
@@ -85,7 +78,7 @@ st.markdown("---")
 # SIDEBAR: OPERAÇÕES E LANÇAMENTOS
 # -------------------------------------------------------------
 with st.sidebar:
-    st.header("⚡ Lançamentos")
+    st.header("⚡ Lançamentos & Gestão")
     
     # 1. Rendas
     with st.expander("💵 Nova Renda", expanded=False):
@@ -94,13 +87,10 @@ with st.sidebar:
             valor_renda = st.number_input("Valor Líquido (R$)", min_value=1.0, step=50.0)
             tipo_renda = st.selectbox("Tipo de Entrada", TIPOS_RENDA)
             data_r = st.date_input("Data do Recebimento", value=hoje)
-            
-            # Opção de registrar a renda para o outro membro
             quem_recebeu = st.selectbox("Quem recebeu?", nomes_compradores, index=idx_atual)
             
             if st.form_submit_button("Salvar Entrada") and origem.strip():
-                perfil_selecionado = opcoes_comprador[quem_recebeu]
-                supabase.table("rendas").insert({"profile_id": perfil_selecionado, "origem": origem.strip(), "valor": float(valor_renda), "tipo": tipo_renda, "data_registro": str(data_r)}).execute()
+                supabase.table("rendas").insert({"profile_id": opcoes_comprador[quem_recebeu], "origem": origem.strip(), "valor": float(valor_renda), "tipo": tipo_renda, "data_registro": str(data_r)}).execute()
                 st.rerun()
 
     # 2. Dia a Dia
@@ -108,22 +98,17 @@ with st.sidebar:
         with st.form("form_dia_a_dia", clear_on_submit=True):
             desc_dia = st.text_input("O que comprou?")
             val_dia = st.number_input("Valor Pago (R$)", min_value=0.10, step=2.0)
-            
             c_d1, c_d2 = st.columns(2)
-            with c_d1:
-                metodo_dia = st.selectbox("Pagamento", ["Pix", "Débito", "Dinheiro"])
-            with c_d2:
-                quem_comprou_dia = st.selectbox("Quem comprou?", nomes_compradores, index=idx_atual)
-                
+            with c_d1: metodo_dia = st.selectbox("Pagamento", ["Pix", "Débito", "Dinheiro"])
+            with c_d2: quem_comprou_dia = st.selectbox("Quem comprou?", nomes_compradores, index=idx_atual)
             banco_dia = st.selectbox("Conta", lista_bancos)
             cat_dia = st.selectbox("Categoria", CATEGORIAS)
             dest_dia = st.selectbox("Destino", DESTINOS)
-            is_shared = st.checkbox("Gasto compartilhado (Conta Conjunta)?", value=bool(ja_info))
+            is_shared = st.checkbox("Visível na Conta Conjunta?", value=bool(ja_info))
             
             if st.form_submit_button("Lançar Gasto") and desc_dia.strip():
-                comprador_id = opcoes_comprador[quem_comprou_dia]
                 supabase.table("gastos").insert({
-                    "profile_id": comprador_id, "joint_account_id": joint_id if is_shared else None,
+                    "profile_id": opcoes_comprador[quem_comprou_dia], "joint_account_id": joint_id if is_shared else None,
                     "descricao": desc_dia.strip(), "valor_total": float(val_dia), "valor_parcela": float(val_dia),
                     "parcelas_pagas": 1, "parcelas_totais": 1, "metodo_pagamento": metodo_dia,
                     "categoria": cat_dia, "banco_vinculado": banco_dia, "destino": dest_dia, "shared": is_shared, "data_registro": str(hoje)
@@ -144,44 +129,60 @@ with st.sidebar:
                 with c_p1: tot_p = st.number_input("Total Parcelas", min_value=1, value=1)
                 with c_p2: pagas_p = st.number_input("Já Pagas", min_value=0, value=0)
                 val_parcela_c = val_total_c / tot_p if tot_p > 0 else val_total_c
-                st.caption(f"Parcela: **R$ {val_parcela_c:.2f}**")
-
+            
             c_c1, c_c2 = st.columns(2)
-            with c_c1:
-                banco_c = st.selectbox("Cartão", lista_bancos)
-            with c_c2:
-                quem_comprou_c = st.selectbox("Quem comprou?", nomes_compradores, index=idx_atual)
-
+            with c_c1: banco_c = st.selectbox("Cartão", lista_bancos)
+            with c_c2: quem_comprou_c = st.selectbox("Quem comprou?", nomes_compradores, index=idx_atual)
             cat_c = st.selectbox("Categoria", CATEGORIAS)
             dest_c = st.selectbox("Destino", DESTINOS)
-            is_shared_c = st.checkbox("Visível para a Conta Conjunta?", value=bool(ja_info))
+            is_shared_c = st.checkbox("Visível na Conta Conjunta?", value=bool(ja_info), key="chk_shared_c")
 
             if st.form_submit_button("Salvar no Cartão") and desc_c.strip():
-                comprador_id_c = opcoes_comprador[quem_comprou_c]
                 supabase.table("gastos").insert({
-                    "profile_id": comprador_id_c, "joint_account_id": joint_id if is_shared_c else None,
+                    "profile_id": opcoes_comprador[quem_comprou_c], "joint_account_id": joint_id if is_shared_c else None,
                     "descricao": desc_c.strip(), "valor_total": float(val_total_c), "valor_parcela": float(val_parcela_c),
                     "parcelas_pagas": int(pagas_p), "parcelas_totais": int(tot_p), "metodo_pagamento": "Crédito",
                     "categoria": cat_c, "banco_vinculado": banco_c, "destino": dest_c, "shared": is_shared_c, "data_registro": str(hoje)
                 }).execute()
                 st.rerun()
 
-    # 4. Bancos & Investimentos
+    # 4. Gerenciar Bancos (Criar, Editar, Excluir)
     with st.expander("🏦 Gerenciar Bancos & Limites"):
-        with st.form("form_banco", clear_on_submit=True):
-            nome_b = st.text_input("Nome do Cartão/Banco")
-            lim_b = st.number_input("Limite (R$)", min_value=0.0, step=100.0)
-            d1, d2 = st.columns(2)
-            with d1: dia_f = st.number_input("Fechamento", min_value=1, max_value=31, value=1)
-            with d2: dia_v = st.number_input("Vencimento", min_value=1, max_value=31, value=10)
-            is_shared_b = st.checkbox("Cartão Compartilhado?", value=bool(ja_info))
-            if st.form_submit_button("Salvar Banco") and nome_b.strip():
-                supabase.table("contas_bancos").insert({
-                    "profile_id": user_id, "joint_account_id": joint_id if is_shared_b else None,
-                    "nome_banco": nome_b.strip(), "limite_credito": float(lim_b),
-                    "dia_fechamento": int(dia_f), "dia_vencimento": int(dia_v), "shared": is_shared_b
-                }).execute()
-                st.rerun()
+        tab_b1, tab_b2, tab_b3 = st.tabs(["Novo", "Editar", "Excluir"])
+        with tab_b1:
+            with st.form("form_novo_banco", clear_on_submit=True):
+                nome_b = st.text_input("Nome do Cartão/Banco")
+                lim_b = st.number_input("Limite (R$)", min_value=0.0, step=100.0)
+                d1, d2 = st.columns(2)
+                with d1: dia_f = st.number_input("Fechamento", min_value=1, max_value=31, value=1)
+                with d2: dia_v = st.number_input("Vencimento", min_value=1, max_value=31, value=10)
+                is_shared_b = st.checkbox("Cartão Compartilhado?", value=bool(ja_info), key="chk_bnc")
+                if st.form_submit_button("Salvar") and nome_b.strip():
+                    supabase.table("contas_bancos").insert({
+                        "profile_id": user_id, "joint_account_id": joint_id if is_shared_b else None,
+                        "nome_banco": nome_b.strip(), "limite_credito": float(lim_b),
+                        "dia_fechamento": int(dia_f), "dia_vencimento": int(dia_v), "shared": is_shared_b
+                    }).execute()
+                    st.rerun()
+        with tab_b2:
+            if not df_bancos.empty:
+                banco_ed = st.selectbox("Selecione o banco:", options=df_bancos["nome_banco"].tolist(), key="sb_ed_b")
+                dados_atuais = df_bancos[df_bancos["nome_banco"] == banco_ed].iloc[0]
+                with st.form("form_ed_banco"):
+                    novo_lim = st.number_input("Novo Limite (R$)", value=float(dados_atuais["limite_credito"]), step=100.0)
+                    c_ed1, c_ed2 = st.columns(2)
+                    with c_ed1: novo_f = st.number_input("Fechamento", value=int(dados_atuais["dia_fechamento"]), min_value=1, max_value=31)
+                    with c_ed2: novo_v = st.number_input("Vencimento", value=int(dados_atuais["dia_vencimento"]), min_value=1, max_value=31)
+                    if st.form_submit_button("Atualizar Banco"):
+                        supabase.table("contas_bancos").update({"limite_credito": float(novo_lim), "dia_fechamento": int(novo_f), "dia_vencimento": int(novo_v)}).eq("id", dados_atuais["id"]).execute()
+                        st.success("Atualizado!")
+                        st.rerun()
+        with tab_b3:
+            if not df_bancos.empty:
+                banco_del = st.selectbox("Banco a excluir:", options=df_bancos["nome_banco"].tolist(), key="sb_del_b")
+                if st.button("Remover Definitivamente"):
+                    supabase.table("contas_bancos").delete().eq("nome_banco", banco_del).execute()
+                    st.rerun()
 
 # -------------------------------------------------------------
 # KPIs
@@ -199,7 +200,9 @@ st.markdown("---")
 # -------------------------------------------------------------
 # ABAS DO APLICATIVO
 # -------------------------------------------------------------
-tab_bancos, tab_extrato, tab_perfis = st.tabs(["🏦 Cartões Compartilhados & Limites", "📝 Extrato Analítico", "👥 Perfis & Autenticação"])
+tab_bancos, tab_extrato, tab_graficos, tab_simulador, tab_perfis = st.tabs([
+    "🏦 Cartões & Limites", "📝 Extrato & Edição", "📊 Análise & Divisão", "📈 Simulador (Caixinhas)", "👥 Perfis"
+])
 
 # --- ABA 1: BANCOS E CARTÕES COMPARTILHADOS ---
 with tab_bancos:
@@ -234,14 +237,11 @@ with tab_bancos:
 
             with colunas[idx % 2]:
                 st.markdown(f"### {b['nome_banco']} {'(Compartilhado 🤝)' if b['shared'] else ''}")
-                
                 if dia_atual < dia_f: st.info(f"🟢 Fatura Aberta (Fecha dia {dia_f:02d})")
                 elif dia_atual <= dia_v: st.warning(f"⚠️ Fatura Fechada! Vence dia {dia_v:02d}")
                 else: st.error(f"🚨 Atrasada! Venceu dia {dia_v:02d}")
 
                 st.write(f"🧾 **Fatura Atual:** :red[R$ {fatura_mes:,.2f}]")
-                
-                # Exibe quem gastou o quê na fatura!
                 if b['shared'] and fatura_mes > 0:
                     for nome, valor in gastos_por_usuario.items():
                         if valor > 0:
@@ -258,32 +258,132 @@ with tab_bancos:
                     st.rerun()
                 st.markdown("---")
 
-# --- ABA 2: EXTRATO ---
+# --- ABA 2: EXTRATO E EDIÇÃO ---
 with tab_extrato:
+    st.subheader("Histórico de Lançamentos")
     if not df_gastos.empty:
         df_display = df_gastos.copy()
         df_display["Comprador"] = df_display["profile_id"].map(mapa_nomes).fillna("Desconhecido")
         df_display["Progresso"] = df_display.apply(lambda r: "Recorrente" if r["parcelas_totais"]==999 else f"{r['parcelas_pagas']}/{r['parcelas_totais']}", axis=1)
         
         st.dataframe(
-            df_display[["data_registro", "Comprador", "descricao", "banco_vinculado", "valor_parcela", "Progresso", "destino"]],
+            df_display[["id", "data_registro", "Comprador", "descricao", "banco_vinculado", "valor_parcela", "Progresso", "categoria"]],
             use_container_width=True, hide_index=True
         )
         
-        del_id = st.selectbox("ID para excluir:", df_display["id"].tolist())
-        if st.button("🗑️ Remover Registro"):
-            supabase.table("gastos").delete().eq("id", del_id).execute()
-            st.rerun()
+        c_ed1, c_ed2 = st.columns(2)
+        with c_ed1:
+            with st.expander("✏️ Editar Gasto"):
+                id_editar = st.selectbox("ID para editar:", df_display["id"].tolist(), key="sb_edit_gasto")
+                item_atual = df_display[df_display["id"] == id_editar].iloc[0]
+                with st.form("form_edit_extrato"):
+                    novo_desc = st.text_input("Descrição", value=item_atual["descricao"])
+                    novo_val = st.number_input("Valor da Parcela (R$)", value=float(item_atual["valor_parcela"]), step=5.0)
+                    nova_cat = st.selectbox("Categoria", CATEGORIAS, index=CATEGORIAS.index(item_atual["categoria"]) if item_atual["categoria"] in CATEGORIAS else 0)
+                    if st.form_submit_button("Salvar Alterações"):
+                        supabase.table("gastos").update({"descricao": novo_desc, "valor_parcela": float(novo_val), "valor_total": float(novo_val), "categoria": nova_cat}).eq("id", id_editar).execute()
+                        st.success("Atualizado!")
+                        st.rerun()
+        with c_ed2:
+            with st.expander("🗑️ Excluir Gasto"):
+                del_id = st.selectbox("ID para excluir:", df_display["id"].tolist(), key="sb_del_gasto")
+                if st.button("Remover Registro Definitivamente"):
+                    supabase.table("gastos").delete().eq("id", del_id).execute()
+                    st.rerun()
+    else:
+        st.info("Nenhum lançamento encontrado.")
 
-# --- ABA 3: PERFIS ---
+# --- ABA 3: GRÁFICOS E DIVISÃO MULTI-PERFIL ---
+with tab_graficos:
+    st.subheader("Análise Visual e Divisão de Despesas")
+    if not df_gastos.empty:
+        df_graficos = df_gastos.copy()
+        df_graficos["Comprador"] = df_graficos["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+        
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            fig_comp = px.pie(
+                df_graficos, names="Comprador", values="valor_parcela",
+                title="Quem gastou mais este mês?", hole=0.4,
+                color_discrete_sequence=CHART_PALETTE
+            )
+            fig_comp.update_traces(textinfo="percent+label", pull=[0.05]*len(df_graficos["Comprador"].unique()))
+            fig_comp.update_layout(paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#FAFAFA"))
+            st.plotly_chart(fig_comp, use_container_width=True)
+            
+        with col_g2:
+            fig_cat = px.pie(
+                df_graficos, names="categoria", values="valor_parcela",
+                title="Gastos por Categoria", hole=0.4,
+                color_discrete_sequence=CHART_PALETTE[::-1]
+            )
+            fig_cat.update_traces(textposition='inside', textinfo='percent+label')
+            fig_cat.update_layout(paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#FAFAFA"), showlegend=False)
+            st.plotly_chart(fig_cat, use_container_width=True)
+            
+        st.markdown("---")
+        st.subheader("Detalhamento: Categoria por Perfil")
+        fig_bar = px.bar(
+            df_graficos.groupby(["Comprador", "categoria"])["valor_parcela"].sum().reset_index(),
+            x="categoria", y="valor_parcela", color="Comprador", barmode="group",
+            text_auto=".2f", title="Comparações Diretas por Categoria",
+            color_discrete_sequence=CHART_PALETTE
+        )
+        fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FAFAFA"))
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+# --- ABA 4: SIMULADOR DE INVESTIMENTOS (CAIXINHAS) ---
+with tab_simulador:
+    st.subheader("📈 Simulador de Caixinhas e Rendimentos (Base CDI)")
+    st.caption("A taxa Selic/CDI atual rende aproximadamente 10.5% ao ano. As Caixinhas do Nubank variam de 100% a 115% do CDI, dependendo da modalidade.")
+    
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1: aporte_sim = st.number_input("Aporte Mensal (R$)", min_value=10.0, value=max(50.0, float(saldo_livre)), step=50.0)
+    with col_s2: meses_sim = st.slider("Prazo de Simulação (Meses)", min_value=6, max_value=120, value=36, step=6)
+    with col_s3: cdi_percent = st.selectbox("Rendimento Alvo", ["100% do CDI (~10.5% a.a.)", "110% do CDI (~11.5% a.a.)", "115% do CDI (~12% a.a.)"], index=0)
+    
+    # Conversão simplificada da taxa selecionada
+    if "100%" in cdi_percent: taxa_ano = 10.5
+    elif "110%" in cdi_percent: taxa_ano = 11.5
+    else: taxa_ano = 12.0
+        
+    taxa_m = (1 + taxa_ano / 100) ** (1 / 12) - 1
+    saldo_proj, investido_proj = 0.0, 0.0
+    linhas = []
+
+    for m_idx in range(1, meses_sim + 1):
+        saldo_proj = (saldo_proj + aporte_sim) * (1 + taxa_m)
+        investido_proj += aporte_sim
+        linhas.append({
+            "Mês": m_idx,
+            "Total Guardado (Bolso)": round(investido_proj, 2),
+            "Montante Final (Com Juros)": round(saldo_proj, 2)
+        })
+
+    df_proj = pd.DataFrame(linhas)
+    
+    fig_proj = px.line(
+        df_proj, x="Mês", y=["Total Guardado (Bolso)", "Montante Final (Com Juros)"],
+        title="Projeção de Crescimento do Patrimônio",
+        color_discrete_sequence=["#FFD166", "#06D6A0"]
+    )
+    fig_proj.update_traces(fill="tozeroy")
+    fig_proj.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FAFAFA"), legend_title_text="Legenda")
+    st.plotly_chart(fig_proj, use_container_width=True)
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Valor Guardado do seu Bolso", f"R$ {investido_proj:,.2f}")
+    col_m2.metric("Lucro em Juros Acumulados", f"R$ {(saldo_proj - investido_proj):,.2f}")
+    col_m3.metric("Montante Final Bruto", f"R$ {saldo_proj:,.2f}")
+
+# --- ABA 5: PERFIS ---
 with tab_perfis:
     st.subheader("Configurações de Conta Conjunta")
     if ja_info:
         st.success(f"Você está na conta: **{ja_info['nome']}**")
         st.code(f"Código Convite: {ja_info['invite_code']}")
         st.write("Membros:")
-        for m in membros_conjuntos:
-            st.write(f"- {m.get('display_name', 'Membro')}")
+        for m in membros_conjuntos: st.write(f"- {m.get('display_name', 'Membro')}")
         if st.button("Sair da Conta Conjunta"):
             leave_joint_account()
             st.rerun()

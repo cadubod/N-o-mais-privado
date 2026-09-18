@@ -32,8 +32,18 @@ ja_info = get_joint_account_info()
 joint_id = ja_info["id"] if ja_info else None
 membros_conjuntos = get_joint_members()
 
-# Mapeamento rápido de IDs para Nomes
+# Mapeamentos para Interface Multi-Perfil
 mapa_nomes = {m["id"]: m.get("display_name", "Membro") for m in membros_conjuntos} if membros_conjuntos else {user_id: display_name}
+
+# Lógica para as opções do Selectbox de "Quem comprou?"
+if membros_conjuntos:
+    opcoes_comprador = {m.get("display_name", "Membro"): m["id"] for m in membros_conjuntos}
+else:
+    opcoes_comprador = {display_name: user_id}
+
+nomes_compradores = list(opcoes_comprador.keys())
+# Define o usuário logado como padrão no formulário
+idx_atual = nomes_compradores.index(display_name) if display_name in nomes_compradores else 0
 
 supabase = get_supabase_client()
 
@@ -84,8 +94,13 @@ with st.sidebar:
             valor_renda = st.number_input("Valor Líquido (R$)", min_value=1.0, step=50.0)
             tipo_renda = st.selectbox("Tipo de Entrada", TIPOS_RENDA)
             data_r = st.date_input("Data do Recebimento", value=hoje)
+            
+            # Opção de registrar a renda para o outro membro
+            quem_recebeu = st.selectbox("Quem recebeu?", nomes_compradores, index=idx_atual)
+            
             if st.form_submit_button("Salvar Entrada") and origem.strip():
-                supabase.table("rendas").insert({"profile_id": user_id, "origem": origem.strip(), "valor": float(valor_renda), "tipo": tipo_renda, "data_registro": str(data_r)}).execute()
+                perfil_selecionado = opcoes_comprador[quem_recebeu]
+                supabase.table("rendas").insert({"profile_id": perfil_selecionado, "origem": origem.strip(), "valor": float(valor_renda), "tipo": tipo_renda, "data_registro": str(data_r)}).execute()
                 st.rerun()
 
     # 2. Dia a Dia
@@ -93,14 +108,22 @@ with st.sidebar:
         with st.form("form_dia_a_dia", clear_on_submit=True):
             desc_dia = st.text_input("O que comprou?")
             val_dia = st.number_input("Valor Pago (R$)", min_value=0.10, step=2.0)
-            metodo_dia = st.selectbox("Pagamento", ["Pix", "Débito", "Dinheiro"])
+            
+            c_d1, c_d2 = st.columns(2)
+            with c_d1:
+                metodo_dia = st.selectbox("Pagamento", ["Pix", "Débito", "Dinheiro"])
+            with c_d2:
+                quem_comprou_dia = st.selectbox("Quem comprou?", nomes_compradores, index=idx_atual)
+                
             banco_dia = st.selectbox("Conta", lista_bancos)
             cat_dia = st.selectbox("Categoria", CATEGORIAS)
             dest_dia = st.selectbox("Destino", DESTINOS)
             is_shared = st.checkbox("Gasto compartilhado (Conta Conjunta)?", value=bool(ja_info))
+            
             if st.form_submit_button("Lançar Gasto") and desc_dia.strip():
+                comprador_id = opcoes_comprador[quem_comprou_dia]
                 supabase.table("gastos").insert({
-                    "profile_id": user_id, "joint_account_id": joint_id if is_shared else None,
+                    "profile_id": comprador_id, "joint_account_id": joint_id if is_shared else None,
                     "descricao": desc_dia.strip(), "valor_total": float(val_dia), "valor_parcela": float(val_dia),
                     "parcelas_pagas": 1, "parcelas_totais": 1, "metodo_pagamento": metodo_dia,
                     "categoria": cat_dia, "banco_vinculado": banco_dia, "destino": dest_dia, "shared": is_shared, "data_registro": str(hoje)
@@ -123,14 +146,20 @@ with st.sidebar:
                 val_parcela_c = val_total_c / tot_p if tot_p > 0 else val_total_c
                 st.caption(f"Parcela: **R$ {val_parcela_c:.2f}**")
 
-            banco_c = st.selectbox("Cartão", lista_bancos)
+            c_c1, c_c2 = st.columns(2)
+            with c_c1:
+                banco_c = st.selectbox("Cartão", lista_bancos)
+            with c_c2:
+                quem_comprou_c = st.selectbox("Quem comprou?", nomes_compradores, index=idx_atual)
+
             cat_c = st.selectbox("Categoria", CATEGORIAS)
             dest_c = st.selectbox("Destino", DESTINOS)
             is_shared_c = st.checkbox("Visível para a Conta Conjunta?", value=bool(ja_info))
 
             if st.form_submit_button("Salvar no Cartão") and desc_c.strip():
+                comprador_id_c = opcoes_comprador[quem_comprou_c]
                 supabase.table("gastos").insert({
-                    "profile_id": user_id, "joint_account_id": joint_id if is_shared_c else None,
+                    "profile_id": comprador_id_c, "joint_account_id": joint_id if is_shared_c else None,
                     "descricao": desc_c.strip(), "valor_total": float(val_total_c), "valor_parcela": float(val_parcela_c),
                     "parcelas_pagas": int(pagas_p), "parcelas_totais": int(tot_p), "metodo_pagamento": "Crédito",
                     "categoria": cat_c, "banco_vinculado": banco_c, "destino": dest_c, "shared": is_shared_c, "data_registro": str(hoje)

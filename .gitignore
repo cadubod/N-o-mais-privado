@@ -1,0 +1,3 @@
+git add .
+git commit -m "Sistema multi-perfil com autenticação e RLS"
+git push

@@ -119,11 +119,17 @@ with st.sidebar:
             is_shared = st.checkbox("Visível na Conta Conjunta?", value=bool(ja_info))
             
             if st.form_submit_button("Registrar Gasto") and desc_dia.strip():
+                comprador_id = opcoes_comprador[quem_comprou_dia]
+                # TRAVA INTELIGENTE: Se lançar no nome do outro, força a ser compartilhado para não quebrar a segurança RLS
+                if comprador_id != user_id:
+                    is_shared = True
+                
                 supabase.table("gastos").insert({
-                    "profile_id": opcoes_comprador[quem_comprou_dia], "joint_account_id": joint_id if is_shared else None,
+                    "profile_id": comprador_id, "joint_account_id": joint_id if is_shared else None,
                     "descricao": desc_dia.strip(), "valor_total": float(val_dia), "valor_parcela": float(val_dia),
                     "parcelas_pagas": 1, "parcelas_totais": 1, "metodo_pagamento": metodo_dia,
-                    "categoria": cat_dia, "banco_vinculado": banco_dia, "destino": dest_dia, "shared": is_shared, "data_registro": str(hoje)
+                    "categoria": cat_dia, "banco_vinculado": banco_dia, "natureza": "Essencial", "destino": dest_dia, 
+                    "shared": is_shared, "data_registro": str(hoje)
                 }).execute()
                 st.rerun()
 
@@ -150,11 +156,17 @@ with st.sidebar:
             is_shared_c = st.checkbox("Visível na Conta Conjunta?", value=bool(ja_info), key="chk_shared_c")
 
             if st.form_submit_button("Lançar na Fatura") and desc_c.strip():
+                comprador_id_c = opcoes_comprador[quem_comprou_c]
+                # TRAVA INTELIGENTE
+                if comprador_id_c != user_id:
+                    is_shared_c = True
+                    
                 supabase.table("gastos").insert({
-                    "profile_id": opcoes_comprador[quem_comprou_c], "joint_account_id": joint_id if is_shared_c else None,
+                    "profile_id": comprador_id_c, "joint_account_id": joint_id if is_shared_c else None,
                     "descricao": desc_c.strip(), "valor_total": float(val_total_c), "valor_parcela": float(val_parcela_c),
                     "parcelas_pagas": int(pagas_p), "parcelas_totais": int(tot_p), "metodo_pagamento": "Crédito",
-                    "categoria": cat_c, "banco_vinculado": banco_c, "destino": dest_c, "shared": is_shared_c, "data_registro": str(hoje)
+                    "categoria": cat_c, "banco_vinculado": banco_c, "natureza": "Essencial", "destino": dest_c, 
+                    "shared": is_shared_c, "data_registro": str(hoje)
                 }).execute()
                 st.rerun()
 
@@ -294,7 +306,6 @@ with tab_extrato:
             df_display["Comprador"] = df_display["profile_id"].map(mapa_nomes).fillna("Desconhecido")
             df_display["Progresso"] = df_display.apply(lambda r: "Recorrente" if r["parcelas_totais"]==999 else f"{r['parcelas_pagas']}/{r['parcelas_totais']}", axis=1)
             
-            # Tabela de Luxo com Column Config
             st.dataframe(
                 df_display[["data_registro", "Comprador", "descricao", "banco_vinculado", "valor_parcela", "Progresso", "categoria", "id"]],
                 use_container_width=True, hide_index=True,
@@ -401,8 +412,6 @@ with tab_simulador:
     if not df_inv.empty:
         df_inv_disp = df_inv.copy()
         df_inv_disp["Dono"] = df_inv_disp["profile_id"].map(mapa_nomes).fillna("Desconhecido")
-        
-        # Maior valor para balizar o tamanho da barra de progresso
         max_val = df_inv_disp["valor_acumulado"].max() * 1.5 if not df_inv_disp.empty else 10000
         
         st.dataframe(

@@ -41,7 +41,7 @@ idx_atual = nomes_compradores.index(display_name) if display_name in nomes_compr
 supabase = get_supabase_client()
 
 # -------------------------------------------------------------
-# CARREGAMENTO DE DADOS (RLS ativo)
+# CARREGAMENTO DE DADOS (RLS ativo garante que contas novas venham zeradas)
 # -------------------------------------------------------------
 def load_all_data():
     r_bancos = supabase.table("contas_bancos").select("*").execute()
@@ -146,7 +146,7 @@ with st.sidebar:
                 }).execute()
                 st.rerun()
 
-    # 4. Gerenciar Bancos (Criar, Editar, Excluir)
+    # 4. Bancos & Limites
     with st.expander("🏦 Gerenciar Bancos & Limites"):
         tab_b1, tab_b2, tab_b3 = st.tabs(["Novo", "Editar", "Excluir"])
         with tab_b1:
@@ -184,6 +184,23 @@ with st.sidebar:
                     supabase.table("contas_bancos").delete().eq("nome_banco", banco_del).execute()
                     st.rerun()
 
+    # 5. Investimentos & Caixinhas
+    with st.expander("📈 Cadastrar Investimento / Caixinha"):
+        with st.form("form_novo_inv", clear_on_submit=True):
+            nome_ativo = st.text_input("Nome (ex: Caixinha Reserva)")
+            cat_inv = st.selectbox("Classe", ["Renda Fixa / CDI", "Tesouro Direto", "Ações / FIIs", "Caixinha"])
+            val_acum = st.number_input("Valor Atual Guardado (R$)", min_value=0.0, step=50.0)
+            aporte_plano = st.number_input("Aporte Mensal Previsto (R$)", min_value=0.0, step=25.0)
+            is_shared_inv = st.checkbox("Caixinha Compartilhada?", value=bool(ja_info))
+            if st.form_submit_button("Registrar") and nome_ativo.strip():
+                supabase.table("investimentos").insert({
+                    "profile_id": user_id, "joint_account_id": joint_id if is_shared_inv else None,
+                    "ativo": nome_ativo.strip(), "categoria": cat_inv,
+                    "valor_acumulado": float(val_acum), "aporte_mensal_planejado": float(aporte_plano),
+                    "shared": is_shared_inv
+                }).execute()
+                st.rerun()
+
 # -------------------------------------------------------------
 # KPIs
 # -------------------------------------------------------------
@@ -201,7 +218,7 @@ st.markdown("---")
 # ABAS DO APLICATIVO
 # -------------------------------------------------------------
 tab_bancos, tab_extrato, tab_graficos, tab_simulador, tab_perfis = st.tabs([
-    "🏦 Cartões & Limites", "📝 Extrato & Edição", "📊 Análise & Divisão", "📈 Simulador (Caixinhas)", "👥 Perfis"
+    "🏦 Cartões & Limites", "📝 Extrato & Edição", "📊 Análise & Divisão", "📈 Simulador & Caixinhas", "👥 Perfis"
 ])
 
 # --- ABA 1: BANCOS E CARTÕES COMPARTILHADOS ---
@@ -257,41 +274,69 @@ with tab_bancos:
                     st.success("Fatura quitada! Limites liberados.")
                     st.rerun()
                 st.markdown("---")
-
-# --- ABA 2: EXTRATO E EDIÇÃO ---
-with tab_extrato:
-    st.subheader("Histórico de Lançamentos")
-    if not df_gastos.empty:
-        df_display = df_gastos.copy()
-        df_display["Comprador"] = df_display["profile_id"].map(mapa_nomes).fillna("Desconhecido")
-        df_display["Progresso"] = df_display.apply(lambda r: "Recorrente" if r["parcelas_totais"]==999 else f"{r['parcelas_pagas']}/{r['parcelas_totais']}", axis=1)
-        
-        st.dataframe(
-            df_display[["id", "data_registro", "Comprador", "descricao", "banco_vinculado", "valor_parcela", "Progresso", "categoria"]],
-            use_container_width=True, hide_index=True
-        )
-        
-        c_ed1, c_ed2 = st.columns(2)
-        with c_ed1:
-            with st.expander("✏️ Editar Gasto"):
-                id_editar = st.selectbox("ID para editar:", df_display["id"].tolist(), key="sb_edit_gasto")
-                item_atual = df_display[df_display["id"] == id_editar].iloc[0]
-                with st.form("form_edit_extrato"):
-                    novo_desc = st.text_input("Descrição", value=item_atual["descricao"])
-                    novo_val = st.number_input("Valor da Parcela (R$)", value=float(item_atual["valor_parcela"]), step=5.0)
-                    nova_cat = st.selectbox("Categoria", CATEGORIAS, index=CATEGORIAS.index(item_atual["categoria"]) if item_atual["categoria"] in CATEGORIAS else 0)
-                    if st.form_submit_button("Salvar Alterações"):
-                        supabase.table("gastos").update({"descricao": novo_desc, "valor_parcela": float(novo_val), "valor_total": float(novo_val), "categoria": nova_cat}).eq("id", id_editar).execute()
-                        st.success("Atualizado!")
-                        st.rerun()
-        with c_ed2:
-            with st.expander("🗑️ Excluir Gasto"):
-                del_id = st.selectbox("ID para excluir:", df_display["id"].tolist(), key="sb_del_gasto")
-                if st.button("Remover Registro Definitivamente"):
-                    supabase.table("gastos").delete().eq("id", del_id).execute()
-                    st.rerun()
     else:
-        st.info("Nenhum lançamento encontrado.")
+        st.info("Nenhum banco cadastrado. Conta zerada.")
+
+# --- ABA 2: EXTRATO COMPLETO (Gastos e Rendas) ---
+with tab_extrato:
+    aba_gastos, aba_rendas = st.tabs(["💸 Despesas", "💵 Rendas"])
+    
+    with aba_gastos:
+        st.subheader("Histórico de Gastos")
+        if not df_gastos.empty:
+            df_display = df_gastos.copy()
+            df_display["Comprador"] = df_display["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+            df_display["Progresso"] = df_display.apply(lambda r: "Recorrente" if r["parcelas_totais"]==999 else f"{r['parcelas_pagas']}/{r['parcelas_totais']}", axis=1)
+            
+            st.dataframe(df_display[["id", "data_registro", "Comprador", "descricao", "banco_vinculado", "valor_parcela", "Progresso", "categoria"]], use_container_width=True, hide_index=True)
+            
+            c_ed1, c_ed2 = st.columns(2)
+            with c_ed1:
+                with st.expander("✏️ Editar Gasto"):
+                    id_editar = st.selectbox("ID para editar:", df_display["id"].tolist(), key="sb_edit_gasto")
+                    item_atual = df_display[df_display["id"] == id_editar].iloc[0]
+                    with st.form("form_edit_extrato"):
+                        novo_desc = st.text_input("Descrição", value=item_atual["descricao"])
+                        novo_val = st.number_input("Valor da Parcela (R$)", value=float(item_atual["valor_parcela"]), step=5.0)
+                        nova_cat = st.selectbox("Categoria", CATEGORIAS, index=CATEGORIAS.index(item_atual["categoria"]) if item_atual["categoria"] in CATEGORIAS else 0)
+                        if st.form_submit_button("Salvar Alterações"):
+                            supabase.table("gastos").update({"descricao": novo_desc, "valor_parcela": float(novo_val), "valor_total": float(novo_val), "categoria": nova_cat}).eq("id", id_editar).execute()
+                            st.rerun()
+            with c_ed2:
+                with st.expander("🗑️ Excluir Gasto"):
+                    del_id = st.selectbox("ID para excluir:", df_display["id"].tolist(), key="sb_del_gasto")
+                    if st.button("Remover Registro Definitivamente"):
+                        supabase.table("gastos").delete().eq("id", del_id).execute()
+                        st.rerun()
+        else:
+            st.info("Nenhum lançamento encontrado.")
+
+    with aba_rendas:
+        st.subheader("Histórico de Rendas")
+        if not df_rendas.empty:
+            df_r_disp = df_rendas.copy()
+            df_r_disp["Recebedor"] = df_r_disp["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+            st.dataframe(df_r_disp[["id", "data_registro", "Recebedor", "origem", "valor", "tipo"]], use_container_width=True, hide_index=True)
+            
+            cr1, cr2 = st.columns(2)
+            with cr1:
+                with st.expander("✏️ Editar Renda"):
+                    id_r = st.selectbox("ID para editar:", df_r_disp["id"].tolist(), key="sb_edit_r")
+                    item_r = df_r_disp[df_r_disp["id"] == id_r].iloc[0]
+                    with st.form("form_edit_r"):
+                        n_origem = st.text_input("Origem", value=item_r["origem"])
+                        n_val_r = st.number_input("Valor (R$)", value=float(item_r["valor"]), step=50.0)
+                        if st.form_submit_button("Salvar Alterações"):
+                            supabase.table("rendas").update({"origem": n_origem, "valor": float(n_val_r)}).eq("id", id_r).execute()
+                            st.rerun()
+            with cr2:
+                with st.expander("🗑️ Excluir Renda"):
+                    del_id_r = st.selectbox("ID para excluir:", df_r_disp["id"].tolist(), key="sb_del_r")
+                    if st.button("Remover Renda"):
+                        supabase.table("rendas").delete().eq("id", del_id_r).execute()
+                        st.rerun()
+        else:
+            st.info("Nenhuma renda registrada.")
 
 # --- ABA 3: GRÁFICOS E DIVISÃO MULTI-PERFIL ---
 with tab_graficos:
@@ -331,18 +376,47 @@ with tab_graficos:
         )
         fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FAFAFA"))
         st.plotly_chart(fig_bar, use_container_width=True)
+    else:
+        st.info("Lance despesas para visualizar os gráficos.")
 
-# --- ABA 4: SIMULADOR DE INVESTIMENTOS (CAIXINHAS) ---
+# --- ABA 4: CAIXINHAS E SIMULADOR ---
 with tab_simulador:
+    st.subheader("Gestão de Caixinhas / Ativos")
+    if not df_inv.empty:
+        df_inv_disp = df_inv.copy()
+        df_inv_disp["Dono"] = df_inv_disp["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+        st.dataframe(df_inv_disp[["id", "Dono", "ativo", "categoria", "valor_acumulado", "aporte_mensal_planejado"]], hide_index=True, use_container_width=True)
+        
+        c_i1, c_i2 = st.columns(2)
+        with c_i1:
+            with st.expander("✏️ Editar Caixinha"):
+                id_i = st.selectbox("ID para editar:", df_inv_disp["id"].tolist(), key="sb_edit_i")
+                item_i = df_inv_disp[df_inv_disp["id"] == id_i].iloc[0]
+                with st.form("form_edit_i"):
+                    n_ativo = st.text_input("Nome da Caixinha", value=item_i["ativo"])
+                    n_val_i = st.number_input("Valor Guardado (R$)", value=float(item_i["valor_acumulado"]), step=50.0)
+                    n_aporte = st.number_input("Aporte Mensal (R$)", value=float(item_i["aporte_mensal_planejado"]), step=50.0)
+                    if st.form_submit_button("Atualizar Caixinha"):
+                        supabase.table("investimentos").update({"ativo": n_ativo, "valor_acumulado": float(n_val_i), "aporte_mensal_planejado": float(n_aporte)}).eq("id", id_i).execute()
+                        st.rerun()
+        with c_i2:
+            with st.expander("🗑️ Excluir Caixinha"):
+                del_id_i = st.selectbox("ID para excluir:", df_inv_disp["id"].tolist(), key="sb_del_i")
+                if st.button("Remover Caixinha"):
+                    supabase.table("investimentos").delete().eq("id", del_id_i).execute()
+                    st.rerun()
+    else:
+        st.info("Nenhuma caixinha criada.")
+
+    st.markdown("---")
     st.subheader("📈 Simulador de Caixinhas e Rendimentos (Base CDI)")
-    st.caption("A taxa Selic/CDI atual rende aproximadamente 10.5% ao ano. As Caixinhas do Nubank variam de 100% a 115% do CDI, dependendo da modalidade.")
+    st.caption("As Caixinhas variam de 100% a 115% do CDI (atualmente em ~10.5% ao ano).")
     
     col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1: aporte_sim = st.number_input("Aporte Mensal (R$)", min_value=10.0, value=max(50.0, float(saldo_livre)), step=50.0)
     with col_s2: meses_sim = st.slider("Prazo de Simulação (Meses)", min_value=6, max_value=120, value=36, step=6)
     with col_s3: cdi_percent = st.selectbox("Rendimento Alvo", ["100% do CDI (~10.5% a.a.)", "110% do CDI (~11.5% a.a.)", "115% do CDI (~12% a.a.)"], index=0)
     
-    # Conversão simplificada da taxa selecionada
     if "100%" in cdi_percent: taxa_ano = 10.5
     elif "110%" in cdi_percent: taxa_ano = 11.5
     else: taxa_ano = 12.0

@@ -232,7 +232,7 @@ def show_auth_page():
 
     st.markdown("""
     <div class="auth-container">
-        <div class="auth-title">💳 Gestor Financeiro</div>
+        <div class="auth-title">Gestor Financeiro</div>
         <div class="auth-subtitle">Controle suas finanças com inteligência</div>
     </div>
     """, unsafe_allow_html=True)

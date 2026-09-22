@@ -102,6 +102,6 @@ CHART_PALETTE: list[str] = [
 # -------------------------------------------------------------
 # APP CONFIG
 # -------------------------------------------------------------
-APP_TITLE = "🛡️ Painel Financeiro"
+APP_TITLE = "Painel Financeiro"
 APP_ICON = "💳"
 APP_LAYOUT = "wide"

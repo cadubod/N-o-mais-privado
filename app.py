@@ -32,11 +32,6 @@ ja_info = get_joint_account_info()
 joint_id = ja_info["id"] if ja_info else None
 membros_conjuntos = get_joint_members()
 
-mapa_nomes = {m["id"]: m.get("display_name", "Membro") for m in membros_conjuntos} if membros_conjuntos else {user_id: display_name}
-opcoes_comprador = {m.get("display_name", "Membro"): m["id"] for m in membros_conjuntos} if membros_conjuntos else {display_name: user_id}
-nomes_compradores = list(opcoes_comprador.keys())
-idx_atual = nomes_compradores.index(display_name) if display_name in nomes_compradores else 0
-
 supabase = get_supabase_client()
 
 # -------------------------------------------------------------
@@ -47,17 +42,40 @@ def load_all_data():
     r_gastos = supabase.table("gastos").select("*").order("data_registro", desc=True).execute()
     r_rendas = supabase.table("rendas").select("*").order("data_registro", desc=True).execute()
     r_inv = supabase.table("investimentos").select("*").order("id").execute()
+    r_perfis_ext = supabase.table("perfis_cartao").select("*").execute()
     
     df_b = pd.DataFrame(r_bancos.data) if r_bancos.data else pd.DataFrame(columns=["id", "nome_banco", "limite_credito", "dia_fechamento", "dia_vencimento", "profile_id", "shared"])
-    df_g = pd.DataFrame(r_gastos.data) if r_gastos.data else pd.DataFrame(columns=["id", "descricao", "valor_total", "valor_parcela", "parcelas_pagas", "parcelas_totais", "metodo_pagamento", "categoria", "banco_vinculado", "natureza", "destino", "data_registro", "profile_id", "shared"])
+    df_g = pd.DataFrame(r_gastos.data) if r_gastos.data else pd.DataFrame(columns=["id", "descricao", "valor_total", "valor_parcela", "parcelas_pagas", "parcelas_totais", "metodo_pagamento", "categoria", "banco_vinculado", "natureza", "destino", "data_registro", "profile_id", "shared", "comprador_externo"])
     df_r = pd.DataFrame(r_rendas.data) if r_rendas.data else pd.DataFrame(columns=["id", "origem", "valor", "tipo", "data_registro", "profile_id"])
     df_i = pd.DataFrame(r_inv.data) if r_inv.data else pd.DataFrame(columns=["id", "ativo", "categoria", "valor_acumulado", "aporte_mensal_planejado", "taxa_anual_estimada", "profile_id", "shared"])
+    df_pe = pd.DataFrame(r_perfis_ext.data) if r_perfis_ext.data else pd.DataFrame(columns=["id", "nome", "profile_id"])
     
-    return df_b, df_g, df_r, df_i
+    if "comprador_externo" not in df_g.columns:
+        df_g["comprador_externo"] = None
+        
+    return df_b, df_g, df_r, df_i, df_pe
 
-df_bancos, df_gastos, df_rendas, df_inv = load_all_data()
+df_bancos, df_gastos, df_rendas, df_inv, df_perfis_ext = load_all_data()
 lista_bancos = df_bancos["nome_banco"].unique().tolist() if not df_bancos.empty else ["Nenhum / Dinheiro"]
 hoje = date.today()
+
+# -------------------------------------------------------------
+# MAPEAMENTO DINÂMICO DE PERFIS E DEPENDENTES
+# -------------------------------------------------------------
+mapa_nomes = {m["id"]: m.get("display_name", "Membro") for m in membros_conjuntos} if membros_conjuntos else {user_id: display_name}
+opcoes_comprador = {m.get("display_name", "Membro"): m["id"] for m in membros_conjuntos} if membros_conjuntos else {display_name: user_id}
+
+if not df_perfis_ext.empty:
+    for _, row in df_perfis_ext.iterrows():
+        opcoes_comprador[f"{row['nome']} (Dependente)"] = f"EXT_{row['nome']}"
+
+nomes_compradores = list(opcoes_comprador.keys())
+idx_atual = nomes_compradores.index(display_name) if display_name in nomes_compradores else 0
+
+def get_comprador_nome(row):
+    if pd.notna(row.get("comprador_externo")) and row.get("comprador_externo"):
+        return f"{row['comprador_externo']} (Dependente)"
+    return mapa_nomes.get(row["profile_id"], "Desconhecido")
 
 # -------------------------------------------------------------
 # HEADER & SELETOR DE VISÃO 
@@ -87,84 +105,92 @@ if ja_info:
 st.markdown("---")
 
 # -------------------------------------------------------------
-# SIDEBAR: OPERAÇÕES E LANÇAMENTOS
+# SIDEBAR: OPERAÇÕES E LANÇAMENTOS UNIFICADOS
 # -------------------------------------------------------------
 with st.sidebar:
     st.header("⚡ Gestão Financeira")
     
-    with st.expander("💵 Adicionar Renda", expanded=False):
+    with st.expander("💵 Nova Renda", expanded=False):
         with st.form("form_rendas", clear_on_submit=True):
-            st.markdown("### 📥 Nova Entrada")
+            st.markdown("### 📥 Adicionar Entrada")
             origem = st.text_input("Fonte Pagadora", placeholder="Ex: Salário da Empresa X")
             valor_renda = st.number_input("Valor Líquido (R$)", min_value=0.0, step=100.0, format="%.2f")
             tipo_renda = st.selectbox("Modalidade", TIPOS_RENDA)
             data_r = st.date_input("Data do Recebimento", value=hoje)
             quem_recebeu = st.selectbox("Titular da Renda", nomes_compradores, index=idx_atual)
+            is_shared_r = st.checkbox("Visível na Conta Conjunta?", value=False, key="chk_r")
             
             if st.form_submit_button("Salvar Entrada") and origem.strip():
-                supabase.table("rendas").insert({"profile_id": opcoes_comprador[quem_recebeu], "origem": origem.strip(), "valor": float(valor_renda), "tipo": tipo_renda, "data_registro": str(data_r)}).execute()
-                st.rerun()
-
-    with st.expander("☕ Gasto Avulso (Débito/Pix)", expanded=False):
-        with st.form("form_dia_a_dia", clear_on_submit=True):
-            st.markdown("### 🛒 Pagamento Imediato")
-            desc_dia = st.text_input("Descrição", placeholder="Ex: Uber, Almoço Ifood...")
-            val_dia = st.number_input("Valor (R$)", min_value=0.0, step=10.0, format="%.2f")
-            c_d1, c_d2 = st.columns(2)
-            with c_d1: metodo_dia = st.selectbox("Via", ["Pix", "Débito", "Dinheiro"])
-            with c_d2: quem_comprou_dia = st.selectbox("Responsável", nomes_compradores, index=idx_atual)
-            banco_dia = st.selectbox("Conta de Origem", lista_bancos)
-            cat_dia = st.selectbox("Categoria", CATEGORIAS)
-            dest_dia = st.selectbox("Destino", DESTINOS)
-            is_shared = st.checkbox("Visível na Conta Conjunta?", value=bool(ja_info))
-            
-            if st.form_submit_button("Registrar Gasto") and desc_dia.strip():
-                comprador_id = opcoes_comprador[quem_comprou_dia]
-                if comprador_id != user_id:
-                    is_shared = True
+                perfil_sel = opcoes_comprador[quem_recebeu]
+                real_id = user_id if str(perfil_sel).startswith("EXT_") else perfil_sel
+                if real_id != user_id: is_shared_r = True
                 
-                supabase.table("gastos").insert({
-                    "profile_id": comprador_id, "joint_account_id": joint_id if is_shared else None,
-                    "descricao": desc_dia.strip(), "valor_total": float(val_dia), "valor_parcela": float(val_dia),
-                    "parcelas_pagas": 1, "parcelas_totais": 1, "metodo_pagamento": metodo_dia,
-                    "categoria": cat_dia, "banco_vinculado": banco_dia, "natureza": "Essencial", "destino": dest_dia, 
-                    "shared": is_shared, "data_registro": str(hoje)
+                supabase.table("rendas").insert({
+                    "profile_id": real_id, "origem": origem.strip(), "valor": float(valor_renda), 
+                    "tipo": tipo_renda, "data_registro": str(data_r), "joint_account_id": joint_id if is_shared_r else None
                 }).execute()
                 st.rerun()
 
-    with st.expander("💳 Compra no Cartão (Crédito)", expanded=False):
-        is_recorrente = st.checkbox("🔁 É assinatura mensal?")
-        with st.form("form_cartao", clear_on_submit=True):
-            st.markdown("### 🛍️ Lançamento de Crédito")
-            desc_c = st.text_input("Descrição", placeholder="Ex: Netflix, Celular...")
-            if is_recorrente:
-                val_mensal = st.number_input("Mensalidade (R$)", min_value=0.0, step=10.0, format="%.2f")
-                tot_p, pagas_p, val_total_c, val_parcela_c = 999, 0, val_mensal, val_mensal
-            else:
-                val_total_c = st.number_input("Valor Total (R$)", min_value=0.0, step=50.0, format="%.2f")
-                c_p1, c_p2 = st.columns(2)
-                with c_p1: tot_p = st.number_input("Parcelas", min_value=1, value=1)
-                with c_p2: pagas_p = st.number_input("Pagas", min_value=0, value=0)
-                val_parcela_c = val_total_c / tot_p if tot_p > 0 else val_total_c
+    with st.expander("💸 Novo Lançamento (Gasto)", expanded=False):
+        with st.form("form_gasto_unificado", clear_on_submit=True):
+            st.markdown("### 🛒 Registro de Despesa")
+            desc_gasto = st.text_input("Descrição", placeholder="Ex: Mercado, Uber, Netflix...")
             
-            c_c1, c_c2 = st.columns(2)
-            with c_c1: banco_c = st.selectbox("Cartão", lista_bancos)
-            with c_c2: quem_comprou_c = st.selectbox("Responsável", nomes_compradores, index=idx_atual)
-            cat_c = st.selectbox("Categoria", CATEGORIAS)
-            dest_c = st.selectbox("Destino", DESTINOS)
-            is_shared_c = st.checkbox("Visível na Conta Conjunta?", value=bool(ja_info), key="chk_shared_c")
+            tipo_gasto = st.selectbox("Modalidade", ["Gasto à vista", "Cartão - Parcelado", "Cartão - Recorrente/Assinatura"])
+            
+            if tipo_gasto == "Gasto à vista":
+                val_total = st.number_input("Valor Pago (R$)", min_value=0.0, step=10.0, format="%.2f")
+                metodo = st.selectbox("Forma de Pagamento", ["Pix", "Débito", "Dinheiro", "Crédito (1x)"])
+                tot_p, pagas_p, val_parc = 1, (1 if metodo != "Crédito (1x)" else 0), val_total
+                if metodo == "Crédito (1x)": metodo = "Crédito"
+            elif tipo_gasto == "Cartão - Parcelado":
+                val_total = st.number_input("Valor Total da Compra (R$)", min_value=0.0, step=50.0, format="%.2f")
+                c1, c2 = st.columns(2)
+                with c1: tot_p = st.number_input("Total de Parcelas", min_value=2, value=2)
+                with c2: pagas_p = st.number_input("Parcelas Já Pagas", min_value=0, value=0)
+                val_parc = val_total / tot_p if tot_p > 0 else 0
+                metodo = "Crédito"
+            else:
+                val_parc = st.number_input("Mensalidade Atual (R$)", min_value=0.0, step=10.0, format="%.2f")
+                val_total, tot_p, pagas_p = val_parc, 999, 0
+                metodo = "Crédito"
 
-            if st.form_submit_button("Lançar na Fatura") and desc_c.strip():
-                comprador_id_c = opcoes_comprador[quem_comprou_c]
-                if comprador_id_c != user_id:
-                    is_shared_c = True
-                    
+            banco_vinculado = st.selectbox("Conta / Cartão Utilizado", lista_bancos)
+            quem_comprou = st.selectbox("Responsável (Quem gastou?)", nomes_compradores, index=idx_atual)
+            cat_gasto = st.selectbox("Categoria", CATEGORIAS)
+            dest_gasto = st.selectbox("Destino", DESTINOS)
+            is_shared_g = st.checkbox("Visível na Conta Conjunta?", value=False, key="chk_g_uni")
+
+            if st.form_submit_button("Registrar Lançamento") and desc_gasto.strip():
+                comprador_sel = opcoes_comprador[quem_comprou]
+                
+                # Desacoplamento para perfis dependentes (sem login)
+                if str(comprador_sel).startswith("EXT_"):
+                    real_profile_id = user_id
+                    comp_externo = comprador_sel.replace("EXT_", "")
+                    if ja_info: is_shared_g = True
+                else:
+                    real_profile_id = comprador_sel
+                    comp_externo = None
+                    if real_profile_id != user_id: is_shared_g = True
+                
                 supabase.table("gastos").insert({
-                    "profile_id": comprador_id_c, "joint_account_id": joint_id if is_shared_c else None,
-                    "descricao": desc_c.strip(), "valor_total": float(val_total_c), "valor_parcela": float(val_parcela_c),
-                    "parcelas_pagas": int(pagas_p), "parcelas_totais": int(tot_p), "metodo_pagamento": "Crédito",
-                    "categoria": cat_c, "banco_vinculado": banco_c, "natureza": "Essencial", "destino": dest_c, 
-                    "shared": is_shared_c, "data_registro": str(hoje)
+                    "profile_id": real_profile_id, "joint_account_id": joint_id if is_shared_g else None,
+                    "comprador_externo": comp_externo, "descricao": desc_gasto.strip(), 
+                    "valor_total": float(val_total), "valor_parcela": float(val_parc),
+                    "parcelas_pagas": int(pagas_p), "parcelas_totais": int(tot_p), "metodo_pagamento": metodo,
+                    "categoria": cat_gasto, "banco_vinculado": banco_vinculado, "natureza": "Essencial", 
+                    "destino": dest_gasto, "shared": is_shared_g, "data_registro": str(hoje)
+                }).execute()
+                st.rerun()
+
+    with st.expander("👥 Adicionar Perfil Dependente (S/ Login)"):
+        st.caption("Cadastre familiares (ex: Filho) que utilizam seus cartões compartilhados, mas não acessarão o app.")
+        with st.form("form_novo_dependente", clear_on_submit=True):
+            nome_dep = st.text_input("Nome do Dependente", placeholder="Ex: Lucas, Letícia...")
+            if st.form_submit_button("Criar Perfil Local") and nome_dep.strip():
+                supabase.table("perfis_cartao").insert({
+                    "profile_id": user_id, "joint_account_id": joint_id, "nome": nome_dep.strip()
                 }).execute()
                 st.rerun()
 
@@ -177,14 +203,13 @@ with st.sidebar:
                 d1, d2 = st.columns(2)
                 with d1: dia_f = st.number_input("Fechamento", min_value=1, max_value=31, value=1)
                 with d2: dia_v = st.number_input("Vencimento", min_value=1, max_value=31, value=10)
-                is_shared_b = st.checkbox("Cartão da Casa (Conjunto)?", value=bool(ja_info), key="chk_bnc")
+                is_shared_b = st.checkbox("Cartão da Casa (Conjunto)?", value=False, key="chk_bnc")
                 if st.form_submit_button("Registrar Instituição") and nome_b.strip():
                     supabase.table("contas_bancos").insert({
                         "profile_id": user_id, "joint_account_id": joint_id if is_shared_b else None,
                         "nome_banco": nome_b.strip(), "limite_credito": float(lim_b),
                         "dia_fechamento": int(dia_f), "dia_vencimento": int(dia_v), 
-                        "emprestimo_ativo": 0.0, "financiamento_ativo": 0.0,
-                        "shared": is_shared_b
+                        "emprestimo_ativo": 0.0, "financiamento_ativo": 0.0, "shared": is_shared_b
                     }).execute()
                     st.rerun()
         with tab_b2:
@@ -209,11 +234,11 @@ with st.sidebar:
     with st.expander("📈 Caixinhas & Investimentos"):
         with st.form("form_novo_inv", clear_on_submit=True):
             st.markdown("### 🏦 Novo Ativo")
-            nome_ativo = st.text_input("Ativo", placeholder="Ex: Caixinha Viagem, CDB...")
+            nome_ativo = st.text_input("Ativo", placeholder="Ex: Caixinha Reserva...")
             cat_inv = st.selectbox("Classe", ["Caixinha", "Renda Fixa / CDI", "Tesouro Direto", "Ações / FIIs"])
             val_acum = st.number_input("Saldo Atual (R$)", min_value=0.0, step=100.0, format="%.2f")
             aporte_plano = st.number_input("Aporte Mensal (R$)", min_value=0.0, step=50.0, format="%.2f")
-            is_shared_inv = st.checkbox("Reserva Conjunta?", value=bool(ja_info))
+            is_shared_inv = st.checkbox("Reserva Conjunta?", value=False, key="chk_inv")
             if st.form_submit_button("Adicionar à Carteira") and nome_ativo.strip():
                 supabase.table("investimentos").insert({
                     "profile_id": user_id, "joint_account_id": joint_id if is_shared_inv else None,
@@ -233,17 +258,16 @@ saldo_livre = renda_total - saidas_mes
 k1, k2, k3 = st.columns(3)
 k1.metric("💰 Receitas Consolidadas", f"R$ {renda_total:,.2f}")
 k2.metric("📉 Despesas Projetadas", f"R$ {saidas_mes:,.2f}", delta=f"{(saidas_mes/renda_total*100 if renda_total else 0):.1f}% do Orçamento", delta_color="inverse")
-k3.metric("🏦 Saldo de Caixa Libre", f"R$ {saldo_livre:,.2f}", delta="Superávit Operacional" if saldo_livre >= 0 else "Déficit Detectado", delta_color="normal" if saldo_livre >= 0 else "inverse")
+k3.metric("🏦 Saldo de Caixa Livre", f"R$ {saldo_livre:,.2f}", delta="Superávit Operacional" if saldo_livre >= 0 else "Déficit Detectado", delta_color="normal" if saldo_livre >= 0 else "inverse")
 st.markdown("---")
 
 # -------------------------------------------------------------
 # ABAS DO APLICATIVO
 # -------------------------------------------------------------
 tab_bancos, tab_extrato, tab_graficos, tab_simulador, tab_perfis = st.tabs([
-    "🏦 Cartões & Limites", "📝 Extrato Analítico", "📊 BI & Divisão", "📈 Simulador de Caixinhas", "👥 Autenticação"
+    "🏦 Cartões & Limites", "📝 Extrato Analítico", "📊 BI & Divisão", "📈 Simulador de Caixinhas", "👥 Perfis & Redes"
 ])
 
-# --- ABA 1: BANCOS E CARTÕES COMPARTILHADOS ---
 with tab_bancos:
     st.subheader("Painel de Cartões de Crédito")
     if not df_bancos.empty:
@@ -253,11 +277,18 @@ with tab_bancos:
         for idx, (_, b) in enumerate(df_bancos.iterrows()):
             compras_banco = df_gastos[(df_gastos["banco_vinculado"] == b["nome_banco"]) & (df_gastos["metodo_pagamento"] == "Crédito")]
             fatura_mes, limite_preso = 0.0, 0.0
+            
             gastos_por_usuario = {nome: 0.0 for nome in mapa_nomes.values()}
+            if not df_perfis_ext.empty:
+                for _, r_dep in df_perfis_ext.iterrows():
+                    gastos_por_usuario[f"{r_dep['nome']} (Dependente)"] = 0.0
 
             if not compras_banco.empty:
                 for _, row_g in compras_banco.iterrows():
-                    comprador = mapa_nomes.get(row_g["profile_id"], "Desconhecido")
+                    comprador = get_comprador_nome(row_g)
+                    if comprador not in gastos_por_usuario:
+                        gastos_por_usuario[comprador] = 0.0
+                        
                     if row_g["parcelas_totais"] == 999:
                         fatura_mes += float(row_g["valor_parcela"])
                         limite_preso += float(row_g["valor_parcela"])
@@ -280,7 +311,7 @@ with tab_bancos:
                 else: st.error(f"🚨 Fatura em Atraso (Venceu dia {dia_v:02d})")
 
                 st.write(f"🧾 **Fatura Atual:** :red[R$ {fatura_mes:,.2f}]")
-                if b['shared'] and fatura_mes > 0:
+                if fatura_mes > 0:
                     for nome, valor in gastos_por_usuario.items():
                         if valor > 0: st.caption(f"👤 {nome}: R$ {valor:,.2f} ({(valor/fatura_mes)*100:.1f}%)")
 
@@ -296,14 +327,13 @@ with tab_bancos:
     else:
         st.info("Nenhuma instituição financeira cadastrada.")
 
-# --- ABA 2: EXTRATO COMPLETO (Gastos e Rendas) ---
 with tab_extrato:
     aba_gastos, aba_rendas = st.tabs(["💸 Lançamentos de Saída", "💵 Entradas e Receitas"])
     
     with aba_gastos:
         if not df_gastos.empty:
             df_display = df_gastos.copy()
-            df_display["Comprador"] = df_display["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+            df_display["Comprador"] = df_display.apply(get_comprador_nome, axis=1)
             df_display["Progresso"] = df_display.apply(lambda r: "Recorrente" if r["parcelas_totais"]==999 else f"{r['parcelas_pagas']}/{r['parcelas_totais']}", axis=1)
             
             st.dataframe(
@@ -344,7 +374,7 @@ with tab_extrato:
     with aba_rendas:
         if not df_rendas.empty:
             df_r_disp = df_rendas.copy()
-            df_r_disp["Recebedor"] = df_r_disp["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+            df_r_disp["Recebedor"] = df_r_disp.apply(get_comprador_nome, axis=1)
             
             st.dataframe(
                 df_r_disp[["data_registro", "Recebedor", "origem", "valor", "tipo", "id"]],
@@ -379,12 +409,11 @@ with tab_extrato:
         else:
             st.info("Nenhuma entrada consolidada.")
 
-# --- ABA 3: GRÁFICOS E DIVISÃO MULTI-PERFIL ---
 with tab_graficos:
     st.subheader("Business Intelligence & Custos")
     if not df_gastos.empty:
         df_graficos = df_gastos.copy()
-        df_graficos["Comprador"] = df_graficos["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+        df_graficos["Comprador"] = df_graficos.apply(get_comprador_nome, axis=1)
         
         col_g1, col_g2 = st.columns(2)
         with col_g1:
@@ -406,12 +435,11 @@ with tab_graficos:
     else:
         st.info("Aguardando volume de dados para consolidação analítica.")
 
-# --- ABA 4: CAIXINHAS E SIMULADOR ---
 with tab_simulador:
     st.subheader("Ativos e Patrimônio Acumulado")
     if not df_inv.empty:
         df_inv_disp = df_inv.copy()
-        df_inv_disp["Dono"] = df_inv_disp["profile_id"].map(mapa_nomes).fillna("Desconhecido")
+        df_inv_disp["Dono"] = df_inv_disp.apply(get_comprador_nome, axis=1)
         
         max_val = float(df_inv_disp["valor_acumulado"].max() * 1.5) if not df_inv_disp.empty else 10000.0
         
@@ -476,8 +504,26 @@ with tab_simulador:
     col_m2.metric("Rendimento Bruto", f"R$ {(saldo_proj - investido_proj):,.2f}")
     col_m3.metric("Valuation Final", f"R$ {saldo_proj:,.2f}")
 
-# --- ABA 5: PERFIS ---
 with tab_perfis:
+    st.subheader("Gerenciar Perfis Secundários (Dependentes)")
+    if not df_perfis_ext.empty:
+        for _, dep in df_perfis_ext.iterrows():
+            col_d1, col_d2, col_d3 = st.columns([5, 2, 2])
+            with col_d1: st.markdown(f"**{dep['nome']}**")
+            with col_d2:
+                with st.popover("✏️ Editar"):
+                    novo_nome_dep = st.text_input("Novo nome", value=dep["nome"], key=f"edit_dep_{dep['id']}")
+                    if st.button("Salvar", key=f"btn_edit_dep_{dep['id']}"):
+                        supabase.table("perfis_cartao").update({"nome": novo_nome_dep}).eq("id", dep['id']).execute()
+                        st.rerun()
+            with col_d3:
+                if st.button("🗑️ Remover", key=f"del_dep_{dep['id']}"):
+                    supabase.table("perfis_cartao").delete().eq("id", dep['id']).execute()
+                    st.rerun()
+    else:
+        st.info("Nenhum dependente cadastrado no momento.")
+
+    st.markdown("---")
     st.subheader("Gestão de Acesso e Sociedade")
     if ja_info:
         st.success(f"Conta Sincronizada: **{ja_info['nome']}**")
